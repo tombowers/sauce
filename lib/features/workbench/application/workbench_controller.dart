@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 
 import '../../../core/models/commit_entry.dart';
 import '../../../core/models/repo_snapshot.dart';
+import '../../../core/models/working_tree_entry.dart';
 import '../../../core/services/git_cli_service.dart';
 import '../../../core/services/local_state_store.dart';
 
@@ -20,17 +21,31 @@ class WorkbenchController extends ChangeNotifier {
   static const _activeRepoPathKey = 'active_repo_path';
   static const _commandLogKey = 'console.command_log';
   static const _selectedCommitByRepoKey = 'selected_commit_by_repo';
+  static const _selectedViewKey = 'workbench.selected_view';
+  static const _workingTreeFilterKey = 'workbench.working_tree.filter';
+  static const _workingTreeLayoutKey = 'workbench.working_tree.layout';
+  static const _selectedWorkingTreePathByRepoKey =
+      'selected_working_tree_path_by_repo';
   final GitCliService _gitService;
   LocalStateStore? _localStore;
   final Map<String, String> _selectedCommitByRepoPath = <String, String>{};
+  final Map<String, String> _selectedWorkingTreePathByRepoPath =
+      <String, String>{};
+  final Set<String> selectedWorkingTreeBatchPaths = <String>{};
+  String? _workingTreeSelectionAnchorPath;
 
   RepoSnapshot? snapshot;
   String repoPath = '';
   String? errorMessage;
+  String? activeDiff;
   bool isLoading = false;
   bool isRunningCommand = false;
+  bool isLoadingDiff = false;
   bool showRemoteBranches = false;
   int selectedCommitIndex = 0;
+  WorkbenchPrimaryView selectedView = WorkbenchPrimaryView.history;
+  WorkingTreeViewFilter workingTreeFilter = WorkingTreeViewFilter.unstaged;
+  WorkingTreeLayout workingTreeLayout = WorkingTreeLayout.flat;
   final List<String> commandLog = <String>[
     'Connect a local repository to begin.',
   ];
@@ -57,6 +72,9 @@ class WorkbenchController extends ChangeNotifier {
       _showRemoteBranchesKey,
       fallback: false,
     );
+    selectedView = _readPrimaryView(store);
+    workingTreeFilter = _readWorkingTreeFilter(store);
+    workingTreeLayout = _readWorkingTreeLayout(store);
     commandLog
       ..clear()
       ..addAll(store.readStringList(_commandLogKey));
@@ -66,6 +84,9 @@ class WorkbenchController extends ChangeNotifier {
     _selectedCommitByRepoPath
       ..clear()
       ..addAll(_loadSelectedCommitByRepoPath(store));
+    _selectedWorkingTreePathByRepoPath
+      ..clear()
+      ..addAll(_loadStringMap(store, _selectedWorkingTreePathByRepoKey));
 
     notifyListeners();
 
@@ -84,6 +105,33 @@ class WorkbenchController extends ChangeNotifier {
   }
 
   bool get hasRepository => snapshot != null;
+
+  List<WorkingTreeEntry> get filteredWorkingTreeEntries {
+    final workingTree = snapshot?.workingTree;
+    if (workingTree == null) {
+      return const [];
+    }
+    return workingTree.entriesForFilter(workingTreeFilter);
+  }
+
+  WorkingTreeEntry? get selectedWorkingTreeEntry {
+    final repo = snapshot;
+    if (repo == null) {
+      return null;
+    }
+    final selectedPath = _selectedWorkingTreePathByRepoPath[repo.path];
+    final entries = filteredWorkingTreeEntries;
+    if (entries.isEmpty) {
+      return null;
+    }
+    if (selectedPath == null || selectedPath.isEmpty) {
+      return entries.first;
+    }
+    return entries.firstWhere(
+      (entry) => entry.path == selectedPath,
+      orElse: () => entries.first,
+    );
+  }
 
   Future<void> connectToRepository(String rawPath) async {
     final trimmedPath = rawPath.trim();
@@ -106,13 +154,17 @@ class WorkbenchController extends ChangeNotifier {
       snapshot = nextSnapshot;
       repoPath = nextSnapshot.path;
       selectedCommitIndex = _resolveSelectedCommitIndex(nextSnapshot);
+      _pruneWorkingTreeBatchSelection(nextSnapshot);
+      _ensureWorkingTreeSelection(nextSnapshot);
       _rememberRepo(nextSnapshot.path);
       unawaited(_persistActiveRepoPath(nextSnapshot.path));
       _persistSelectedCommitForCurrentRepo();
+      await _loadDiffForCurrentSelection(notify: false);
     } on GitCliException catch (error) {
       errorMessage = error.message;
     } catch (_) {
       errorMessage = 'Unable to inspect that repository.';
+      activeDiff = null;
     } finally {
       isLoading = false;
       notifyListeners();
@@ -189,6 +241,167 @@ class WorkbenchController extends ChangeNotifier {
     }
   }
 
+  Future<void> setPrimaryView(WorkbenchPrimaryView view) async {
+    if (selectedView == view) {
+      return;
+    }
+    selectedView = view;
+    if (view == WorkbenchPrimaryView.changes) {
+      final repo = snapshot;
+      if (repo != null) {
+        _ensureWorkingTreeSelection(repo);
+      }
+    }
+    final store = await _store();
+    await store.writeString(_selectedViewKey, view.name);
+    notifyListeners();
+    if (view == WorkbenchPrimaryView.changes) {
+      await _loadDiffForCurrentSelection();
+    }
+  }
+
+  Future<void> setWorkingTreeFilter(WorkingTreeViewFilter filter) async {
+    if (workingTreeFilter == filter) {
+      return;
+    }
+    workingTreeFilter = filter;
+    final repo = snapshot;
+    if (repo != null) {
+      _ensureWorkingTreeSelection(repo);
+    }
+    final store = await _store();
+    await store.writeString(_workingTreeFilterKey, filter.name);
+    notifyListeners();
+    await _loadDiffForCurrentSelection();
+  }
+
+  Future<void> setWorkingTreeLayout(WorkingTreeLayout layout) async {
+    if (workingTreeLayout == layout) {
+      return;
+    }
+    workingTreeLayout = layout;
+    final store = await _store();
+    await store.writeString(_workingTreeLayoutKey, layout.name);
+    notifyListeners();
+  }
+
+  Future<void> selectWorkingTreeEntry(String path) async {
+    final repo = snapshot;
+    if (repo == null) {
+      return;
+    }
+    _selectedWorkingTreePathByRepoPath[repo.path] = path;
+    _workingTreeSelectionAnchorPath = path;
+    unawaited(_persistSelectedWorkingTreePathMap());
+    notifyListeners();
+    await _loadDiffForCurrentSelection();
+  }
+
+  Future<void> activateWorkingTreeEntry({
+    required String path,
+    required List<String> visiblePaths,
+    required bool isControlPressed,
+    required bool isShiftPressed,
+  }) async {
+    final repo = snapshot;
+    if (repo == null) {
+      return;
+    }
+
+    _selectedWorkingTreePathByRepoPath[repo.path] = path;
+
+    if (isShiftPressed && visiblePaths.isNotEmpty) {
+      final anchor = _workingTreeSelectionAnchorPath ?? path;
+      final anchorIndex = visiblePaths.indexOf(anchor);
+      final targetIndex = visiblePaths.indexOf(path);
+      if (anchorIndex != -1 && targetIndex != -1) {
+        if (!isControlPressed) {
+          selectedWorkingTreeBatchPaths.clear();
+        }
+        final start = anchorIndex < targetIndex ? anchorIndex : targetIndex;
+        final end = anchorIndex < targetIndex ? targetIndex : anchorIndex;
+        selectedWorkingTreeBatchPaths.addAll(
+          visiblePaths.sublist(start, end + 1),
+        );
+      }
+    } else if (isControlPressed) {
+      _workingTreeSelectionAnchorPath = path;
+      if (!selectedWorkingTreeBatchPaths.add(path)) {
+        selectedWorkingTreeBatchPaths.remove(path);
+      }
+    } else {
+      _workingTreeSelectionAnchorPath = path;
+      selectedWorkingTreeBatchPaths.clear();
+    }
+
+    unawaited(_persistSelectedWorkingTreePathMap());
+    notifyListeners();
+    await _loadDiffForCurrentSelection();
+  }
+
+  Future<void> stageWorkingTreeEntry(WorkingTreeEntry entry) async {
+    await _runUserGitAction(['add', '--', entry.path]);
+  }
+
+  Future<void> stageAllWorkingTreeEntries() async {
+    selectedWorkingTreeBatchPaths.clear();
+    await _runUserGitAction(const ['add', '--all']);
+  }
+
+  Future<void> stageSelectedWorkingTreeEntries() async {
+    final paths = _selectedEntriesForFilter(
+      WorkingTreeViewFilter.unstaged,
+    ).map((entry) => entry.path).toList();
+    if (paths.isEmpty) {
+      return;
+    }
+    selectedWorkingTreeBatchPaths.clear();
+    await _runUserGitAction(['add', '--', ...paths]);
+  }
+
+  Future<void> unstageWorkingTreeEntry(WorkingTreeEntry entry) async {
+    await _runUserGitAction(['reset', '--', entry.path]);
+  }
+
+  Future<void> unstageAllWorkingTreeEntries() async {
+    selectedWorkingTreeBatchPaths.clear();
+    await _runUserGitAction(const ['reset']);
+  }
+
+  Future<void> unstageSelectedWorkingTreeEntries() async {
+    final paths = _selectedEntriesForFilter(
+      WorkingTreeViewFilter.staged,
+    ).map((entry) => entry.path).toList();
+    if (paths.isEmpty) {
+      return;
+    }
+    selectedWorkingTreeBatchPaths.clear();
+    await _runUserGitAction(['reset', '--', ...paths]);
+  }
+
+  Future<void> discardWorkingTreeEntry(WorkingTreeEntry entry) async {
+    if (entry.isIgnored) {
+      return;
+    }
+    if (entry.isUntracked) {
+      await _runUserGitAction(['clean', '-f', '--', entry.path]);
+      return;
+    }
+    if (entry.hasPendingChanges) {
+      await _runUserGitAction(['restore', '--', entry.path]);
+      return;
+    }
+    if (entry.hasStagedChanges) {
+      await _runUserGitAction([
+        'restore',
+        '--staged',
+        '--worktree',
+        '--',
+        entry.path,
+      ]);
+    }
+  }
+
   Future<void> _runGitCommand(List<String> args) async {
     final repo = snapshot;
     if (repo == null) {
@@ -218,6 +431,31 @@ class WorkbenchController extends ChangeNotifier {
     }
   }
 
+  Future<void> _runUserGitAction(List<String> args) async {
+    final previousSelection = selectedWorkingTreeEntry?.path;
+    await _runGitCommand(args);
+    if (snapshot == null) {
+      return;
+    }
+    if (previousSelection != null) {
+      _selectedWorkingTreePathByRepoPath[snapshot!.path] = previousSelection;
+    }
+    await refresh();
+  }
+
+  List<WorkingTreeEntry> _selectedEntriesForFilter(
+    WorkingTreeViewFilter filter,
+  ) {
+    final workingTree = snapshot?.workingTree;
+    if (workingTree == null || selectedWorkingTreeBatchPaths.isEmpty) {
+      return const [];
+    }
+    return workingTree
+        .entriesForFilter(filter)
+        .where((entry) => selectedWorkingTreeBatchPaths.contains(entry.path))
+        .toList();
+  }
+
   void _appendCommand(String line) {
     commandLog.add(line);
     if (commandLog.length > 200) {
@@ -245,7 +483,11 @@ class WorkbenchController extends ChangeNotifier {
   }
 
   Map<String, String> _loadSelectedCommitByRepoPath(LocalStateStore store) {
-    final rawJson = store.readString(_selectedCommitByRepoKey, fallback: '{}');
+    return _loadStringMap(store, _selectedCommitByRepoKey);
+  }
+
+  Map<String, String> _loadStringMap(LocalStateStore store, String key) {
+    final rawJson = store.readString(key, fallback: '{}');
     try {
       final decoded = jsonDecode(rawJson);
       if (decoded is! Map<String, dynamic>) {
@@ -257,6 +499,42 @@ class WorkbenchController extends ChangeNotifier {
     } catch (_) {
       return <String, String>{};
     }
+  }
+
+  WorkbenchPrimaryView _readPrimaryView(LocalStateStore store) {
+    final raw = store.readString(
+      _selectedViewKey,
+      fallback: WorkbenchPrimaryView.history.name,
+    );
+    return WorkbenchPrimaryView.values.firstWhere(
+      (value) => value.name == raw,
+      orElse: () => WorkbenchPrimaryView.history,
+    );
+  }
+
+  WorkingTreeViewFilter _readWorkingTreeFilter(LocalStateStore store) {
+    final raw = store.readString(
+      _workingTreeFilterKey,
+      fallback: WorkingTreeViewFilter.unstaged.name,
+    );
+    if (raw == 'pending' || raw == 'untracked') {
+      return WorkingTreeViewFilter.unstaged;
+    }
+    return WorkingTreeViewFilter.values.firstWhere(
+      (value) => value.name == raw,
+      orElse: () => WorkingTreeViewFilter.unstaged,
+    );
+  }
+
+  WorkingTreeLayout _readWorkingTreeLayout(LocalStateStore store) {
+    final raw = store.readString(
+      _workingTreeLayoutKey,
+      fallback: WorkingTreeLayout.flat.name,
+    );
+    return WorkingTreeLayout.values.firstWhere(
+      (value) => value.name == raw,
+      orElse: () => WorkingTreeLayout.flat,
+    );
   }
 
   int _resolveSelectedCommitIndex(RepoSnapshot snapshot) {
@@ -287,6 +565,69 @@ class WorkbenchController extends ChangeNotifier {
     );
   }
 
+  void _ensureWorkingTreeSelection(RepoSnapshot repo) {
+    final entries = repo.workingTree.entriesForFilter(workingTreeFilter);
+    if (entries.isEmpty) {
+      _selectedWorkingTreePathByRepoPath.remove(repo.path);
+      activeDiff = null;
+      unawaited(_persistSelectedWorkingTreePathMap());
+      return;
+    }
+    final currentPath = _selectedWorkingTreePathByRepoPath[repo.path];
+    if (currentPath != null &&
+        entries.any((entry) => entry.path == currentPath)) {
+      return;
+    }
+    _selectedWorkingTreePathByRepoPath[repo.path] = entries.first.path;
+    unawaited(_persistSelectedWorkingTreePathMap());
+  }
+
+  void _pruneWorkingTreeBatchSelection(RepoSnapshot repo) {
+    final currentPaths = repo.workingTree.entries.map((entry) => entry.path);
+    selectedWorkingTreeBatchPaths.removeWhere(
+      (path) => !currentPaths.contains(path),
+    );
+  }
+
+  Future<void> _loadDiffForCurrentSelection({bool notify = true}) async {
+    final repo = snapshot;
+    final entry = selectedWorkingTreeEntry;
+    if (repo == null || entry == null) {
+      activeDiff = null;
+      isLoadingDiff = false;
+      if (notify) {
+        notifyListeners();
+      }
+      return;
+    }
+
+    isLoadingDiff = true;
+    if (notify) {
+      notifyListeners();
+    }
+    try {
+      activeDiff = await _gitService.loadWorkingTreeDiff(
+        repoPath: repo.path,
+        entry: entry,
+      );
+    } on GitCliException catch (error) {
+      activeDiff = error.message;
+    } catch (_) {
+      activeDiff = 'Unable to load diff preview.';
+    } finally {
+      isLoadingDiff = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> _persistSelectedWorkingTreePathMap() async {
+    final store = await _store();
+    await store.writeString(
+      _selectedWorkingTreePathByRepoKey,
+      jsonEncode(_selectedWorkingTreePathByRepoPath),
+    );
+  }
+
   Future<void> _persistActiveRepoPath(String path) async {
     final store = await _store();
     await store.writeString(_activeRepoPathKey, path);
@@ -301,3 +642,7 @@ class WorkbenchController extends ChangeNotifier {
     return _localStore ??= await LocalStateStore.load();
   }
 }
+
+enum WorkbenchPrimaryView { history, changes }
+
+enum WorkingTreeLayout { flat, tree }

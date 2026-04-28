@@ -1,7 +1,9 @@
+import 'dart:convert';
 import 'dart:io';
 
 import '../models/commit_entry.dart';
 import '../models/repo_snapshot.dart';
+import '../models/working_tree_entry.dart';
 
 class GitCliService {
   static const _defaultHistoryDepth = 80;
@@ -14,9 +16,10 @@ class GitCliService {
     final resolvedPath = await _resolveRepositoryRoot(repoPath);
     final statusResult = await _runGit([
       'status',
-      '--short',
       '--branch',
-      '--porcelain=v1',
+      '--porcelain=v2',
+      '-z',
+      '--ignored=matching',
     ], workingDirectory: resolvedPath);
     final logArgs = <String>[
       'log',
@@ -95,6 +98,52 @@ class GitCliService {
     );
   }
 
+  Future<String> loadWorkingTreeDiff({
+    required String repoPath,
+    required WorkingTreeEntry entry,
+  }) async {
+    if (entry.isIgnored) {
+      return 'Ignored files do not have a working diff.';
+    }
+
+    if (entry.isUntracked) {
+      return _buildUntrackedDiff(repoPath, entry.path);
+    }
+
+    final sections = <String>[];
+
+    if (entry.hasStagedChanges) {
+      final stagedDiff = await _runGitAllowFailure([
+        'diff',
+        '--cached',
+        '--',
+        entry.path,
+      ], workingDirectory: repoPath);
+      final trimmed = stagedDiff.stdout.trimRight();
+      if (trimmed.isNotEmpty) {
+        sections.add(trimmed);
+      }
+    }
+
+    if (entry.hasPendingChanges) {
+      final pendingDiff = await _runGitAllowFailure([
+        'diff',
+        '--',
+        entry.path,
+      ], workingDirectory: repoPath);
+      final trimmed = pendingDiff.stdout.trimRight();
+      if (trimmed.isNotEmpty) {
+        sections.add(trimmed);
+      }
+    }
+
+    if (sections.isEmpty) {
+      return 'No diff available for this file.';
+    }
+
+    return sections.join('\n\n');
+  }
+
   Future<String> _resolveRepositoryRoot(String repoPath) async {
     final result = await _runGit([
       'rev-parse',
@@ -126,72 +175,195 @@ class GitCliService {
     return result;
   }
 
+  Future<ProcessResult> _runGitAllowFailure(
+    List<String> args, {
+    required String workingDirectory,
+  }) {
+    return Process.run(
+      'git',
+      args,
+      workingDirectory: workingDirectory,
+      runInShell: true,
+    );
+  }
+
   RepoSnapshot _buildSnapshot({
     required String resolvedPath,
     required String statusOutput,
     required String logOutput,
   }) {
-    final statusLines = statusOutput
-        .replaceAll('\r\n', '\n')
-        .split('\n')
-        .where((line) => line.isNotEmpty)
-        .toList();
-
-    final branchLine = statusLines.isNotEmpty ? statusLines.first : '';
-    var stagedCount = 0;
-    var unstagedCount = 0;
-    var untrackedCount = 0;
-
-    for (final line in statusLines.skip(1)) {
-      if (line.startsWith('??')) {
-        untrackedCount++;
-        continue;
-      }
-
-      if (line.length >= 2) {
-        if (line[0] != ' ') {
-          stagedCount++;
-        }
-        if (line[1] != ' ') {
-          unstagedCount++;
-        }
-      }
-    }
-
-    final branchName = _parseBranchName(branchLine);
-    final aheadBy = _parseAheadBehind(branchLine, 'ahead');
-    final behindBy = _parseAheadBehind(branchLine, 'behind');
+    final statusSnapshot = _parseWorkingTree(statusOutput);
     final commits = _parseCommits(logOutput);
 
     return RepoSnapshot(
       name: _repoNameFromPath(resolvedPath),
       path: resolvedPath,
-      branch: branchName,
-      aheadBy: aheadBy,
-      behindBy: behindBy,
-      stagedCount: stagedCount,
-      unstagedCount: unstagedCount,
-      untrackedCount: untrackedCount,
+      branch: statusSnapshot.branch,
+      aheadBy: statusSnapshot.aheadBy,
+      behindBy: statusSnapshot.behindBy,
+      stagedCount: statusSnapshot.workingTree.stagedCount,
+      unstagedCount: statusSnapshot.workingTree.pendingCount,
+      untrackedCount: statusSnapshot.workingTree.untrackedCount,
+      workingTree: statusSnapshot.workingTree,
       commits: commits,
     );
   }
 
-  String _parseBranchName(String branchLine) {
-    if (!branchLine.startsWith('## ')) {
-      return 'unknown';
+  _ParsedStatusSnapshot _parseWorkingTree(String statusOutput) {
+    final records = statusOutput.split('\x00');
+    var branch = 'unknown';
+    var aheadBy = 0;
+    var behindBy = 0;
+    var stagedCount = 0;
+    var pendingCount = 0;
+    var untrackedCount = 0;
+    var ignoredCount = 0;
+    final entries = <WorkingTreeEntry>[];
+
+    for (var index = 0; index < records.length; index++) {
+      final record = records[index];
+      if (record.isEmpty) {
+        continue;
+      }
+
+      if (record.startsWith('# ')) {
+        if (record.startsWith('# branch.head ')) {
+          branch = record.substring('# branch.head '.length).trim();
+        } else if (record.startsWith('# branch.ab ')) {
+          final match = RegExp(
+            r'# branch\.ab \+(\d+) \-(\d+)',
+          ).firstMatch(record);
+          if (match != null) {
+            aheadBy = int.parse(match.group(1)!);
+            behindBy = int.parse(match.group(2)!);
+          }
+        }
+        continue;
+      }
+
+      final kind = record[0];
+      if (kind == '?' || kind == '!') {
+        final rawPath = record.length > 2 ? record.substring(2) : '';
+        final normalizedPath = rawPath.replaceAll('\\', '/');
+        final entry = _buildWorkingTreeEntry(
+          path: normalizedPath,
+          stagedKind: kind == '?'
+              ? GitFileStatusKind.untracked
+              : GitFileStatusKind.ignored,
+          pendingKind: kind == '?'
+              ? GitFileStatusKind.untracked
+              : GitFileStatusKind.ignored,
+          isUntracked: kind == '?',
+          isIgnored: kind == '!',
+        );
+        entries.add(entry);
+        if (kind == '?') {
+          untrackedCount++;
+        } else {
+          ignoredCount++;
+        }
+        continue;
+      }
+
+      final parts = record.split(' ');
+      if (parts.length < 2) {
+        continue;
+      }
+
+      final xy = parts[1];
+      final stagedKind = _statusKindFromCode(xy.isNotEmpty ? xy[0] : '.');
+      final pendingKind = _statusKindFromCode(xy.length > 1 ? xy[1] : '.');
+      final path = parts.last.replaceAll('\\', '/');
+      String? originalPath;
+      if (kind == '2' && index + 1 < records.length) {
+        originalPath = records[++index].replaceAll('\\', '/');
+      }
+
+      final entry = _buildWorkingTreeEntry(
+        path: path,
+        originalPath: originalPath,
+        stagedKind: stagedKind,
+        pendingKind: pendingKind,
+        isUntracked: false,
+        isIgnored: false,
+      );
+      entries.add(entry);
+      if (entry.hasStagedChanges) {
+        stagedCount++;
+      }
+      if (entry.hasPendingChanges) {
+        pendingCount++;
+      }
     }
 
-    final content = branchLine.substring(3);
-    final splitIndex = content.indexOf('...');
-    if (splitIndex == -1) {
-      return content;
-    }
-    return content.substring(0, splitIndex);
+    entries.sort((a, b) => a.path.compareTo(b.path));
+
+    return _ParsedStatusSnapshot(
+      branch: branch == '(detached)' ? 'DETACHED' : branch,
+      aheadBy: aheadBy,
+      behindBy: behindBy,
+      workingTree: WorkingTreeSnapshot(
+        entries: entries,
+        stagedCount: stagedCount,
+        pendingCount: pendingCount,
+        untrackedCount: untrackedCount,
+        ignoredCount: ignoredCount,
+      ),
+    );
   }
 
-  int _parseAheadBehind(String branchLine, String label) {
-    final match = RegExp('$label (\\d+)').firstMatch(branchLine);
-    return match == null ? 0 : int.parse(match.group(1)!);
+  WorkingTreeEntry _buildWorkingTreeEntry({
+    required String path,
+    required GitFileStatusKind stagedKind,
+    required GitFileStatusKind pendingKind,
+    required bool isUntracked,
+    required bool isIgnored,
+    String? originalPath,
+  }) {
+    final normalizedPath = path.replaceAll('\\', '/');
+    final lastSlash = normalizedPath.lastIndexOf('/');
+    final directory = lastSlash == -1
+        ? '.'
+        : normalizedPath.substring(0, lastSlash);
+    final displayName = lastSlash == -1
+        ? normalizedPath
+        : normalizedPath.substring(lastSlash + 1);
+    return WorkingTreeEntry(
+      path: normalizedPath,
+      displayName: displayName,
+      directory: directory,
+      stagedKind: stagedKind,
+      pendingKind: pendingKind,
+      isUntracked: isUntracked,
+      isIgnored: isIgnored,
+      originalPath: originalPath,
+    );
+  }
+
+  GitFileStatusKind _statusKindFromCode(String code) {
+    switch (code) {
+      case '.':
+      case ' ':
+        return GitFileStatusKind.unmodified;
+      case 'M':
+        return GitFileStatusKind.modified;
+      case 'A':
+        return GitFileStatusKind.added;
+      case 'D':
+        return GitFileStatusKind.deleted;
+      case 'R':
+        return GitFileStatusKind.renamed;
+      case 'C':
+        return GitFileStatusKind.copied;
+      case 'U':
+        return GitFileStatusKind.unmerged;
+      case '?':
+        return GitFileStatusKind.untracked;
+      case '!':
+        return GitFileStatusKind.ignored;
+      default:
+        return GitFileStatusKind.modified;
+    }
   }
 
   List<CommitEntry> _parseCommits(String logOutput) {
@@ -380,6 +552,40 @@ class GitCliService {
     final segments = normalized.split('/');
     return segments.isNotEmpty ? segments.last : path;
   }
+
+  Future<String> _buildUntrackedDiff(
+    String repoPath,
+    String relativePath,
+  ) async {
+    final file = File(
+      '$repoPath${Platform.pathSeparator}${relativePath.replaceAll('/', Platform.pathSeparator)}',
+    );
+    if (!await file.exists()) {
+      return 'File no longer exists on disk.';
+    }
+
+    try {
+      final contents = await file.readAsString();
+      final lines = const LineSplitter().convert(contents);
+      final buffer = StringBuffer()
+        ..writeln('diff --git a/$relativePath b/$relativePath')
+        ..writeln('new file mode 100644')
+        ..writeln('--- /dev/null')
+        ..writeln('+++ b/$relativePath')
+        ..writeln('@@ -0,0 +1,${lines.length} @@');
+      for (final line in lines) {
+        buffer.writeln('+$line');
+      }
+      if (contents.endsWith('\n') && lines.isEmpty) {
+        buffer.writeln('+');
+      }
+      return buffer.toString().trimRight();
+    } on FileSystemException {
+      return 'Unable to read file contents for diff preview.';
+    } on FormatException {
+      return 'Binary or non-text file. Diff preview is not available yet.';
+    }
+  }
 }
 
 class GitCommandResult {
@@ -498,4 +704,18 @@ class _LaidOutPendingCommit {
   final List<String> beforeLaneKeys;
   final List<String> afterLaneKeys;
   final bool hasTopContinuation;
+}
+
+class _ParsedStatusSnapshot {
+  const _ParsedStatusSnapshot({
+    required this.branch,
+    required this.aheadBy,
+    required this.behindBy,
+    required this.workingTree,
+  });
+
+  final String branch;
+  final int aheadBy;
+  final int behindBy;
+  final WorkingTreeSnapshot workingTree;
 }

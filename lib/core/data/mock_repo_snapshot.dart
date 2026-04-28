@@ -1,5 +1,6 @@
 import '../models/commit_entry.dart';
 import '../models/repo_snapshot.dart';
+import '../models/working_tree_entry.dart';
 
 const mockRepoSnapshot = RepoSnapshot(
   name: 'gitclient',
@@ -10,6 +11,13 @@ const mockRepoSnapshot = RepoSnapshot(
   stagedCount: 3,
   unstagedCount: 5,
   untrackedCount: 1,
+  workingTree: WorkingTreeSnapshot(
+    entries: [],
+    stagedCount: 3,
+    pendingCount: 5,
+    untrackedCount: 1,
+    ignoredCount: 0,
+  ),
   commits: [
     CommitEntry(
       sha: 'f2c41b7',
