@@ -39,9 +39,14 @@ class WorkbenchController extends ChangeNotifier {
   String repoPath = '';
   String? errorMessage;
   String? activeDiff;
+  List<CommitFileChange> selectedCommitFiles = const <CommitFileChange>[];
+  String? selectedCommitFilePath;
+  String? activeCommitDiff;
   bool isLoading = false;
   bool isRunningCommand = false;
   bool isLoadingDiff = false;
+  bool isLoadingCommitFiles = false;
+  bool isLoadingCommitDiff = false;
   bool showRemoteBranches = false;
   int selectedCommitIndex = 0;
   WorkbenchPrimaryView selectedView = WorkbenchPrimaryView.history;
@@ -103,6 +108,19 @@ class WorkbenchController extends ChangeNotifier {
     }
     final index = selectedCommitIndex.clamp(0, commits.length - 1);
     return commits[index];
+  }
+
+  CommitFileChange? get selectedCommitFile {
+    final path = selectedCommitFilePath;
+    if (path == null || selectedCommitFiles.isEmpty) {
+      return null;
+    }
+    for (final change in selectedCommitFiles) {
+      if (change.path == path) {
+        return change;
+      }
+    }
+    return null;
   }
 
   bool get hasRepository => snapshot != null;
@@ -183,12 +201,23 @@ class WorkbenchController extends ChangeNotifier {
       _rememberRepo(nextSnapshot.path);
       unawaited(_persistActiveRepoPath(nextSnapshot.path));
       _persistSelectedCommitForCurrentRepo();
+      await _loadSelectedCommitFiles(notify: false);
       await _loadDiffForCurrentSelection(notify: false);
     } on GitCliException catch (error) {
       errorMessage = error.message;
+      isLoadingCommitFiles = false;
+      selectedCommitFiles = const <CommitFileChange>[];
+      selectedCommitFilePath = null;
+      activeCommitDiff = null;
+      isLoadingCommitDiff = false;
     } catch (_) {
       errorMessage = 'Unable to inspect that repository.';
       activeDiff = null;
+      isLoadingCommitFiles = false;
+      selectedCommitFiles = const <CommitFileChange>[];
+      selectedCommitFilePath = null;
+      activeCommitDiff = null;
+      isLoadingCommitDiff = false;
     } finally {
       isLoading = false;
       notifyListeners();
@@ -240,6 +269,16 @@ class WorkbenchController extends ChangeNotifier {
     }
     _persistSelectedCommitForCurrentRepo();
     notifyListeners();
+    unawaited(_loadSelectedCommitFiles());
+  }
+
+  Future<void> selectCommitFile(String path) async {
+    if (selectedCommitFilePath == path && activeCommitDiff != null) {
+      return;
+    }
+    selectedCommitFilePath = path;
+    notifyListeners();
+    await _loadSelectedCommitDiff();
   }
 
   Future<void> selectUncommittedChanges() async {
@@ -334,6 +373,8 @@ class WorkbenchController extends ChangeNotifier {
     notifyListeners();
     if (view == WorkbenchPrimaryView.changes) {
       await _loadDiffForCurrentSelection();
+    } else {
+      await _loadSelectedCommitFiles();
     }
   }
 
@@ -728,6 +769,86 @@ class WorkbenchController extends ChangeNotifier {
       activeDiff = 'Unable to load diff preview.';
     } finally {
       isLoadingDiff = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> _loadSelectedCommitFiles({bool notify = true}) async {
+    final repo = snapshot;
+    final commit = selectedCommit;
+    if (repo == null || commit == null) {
+      selectedCommitFiles = const <CommitFileChange>[];
+      selectedCommitFilePath = null;
+      isLoadingCommitFiles = false;
+      activeCommitDiff = null;
+      isLoadingCommitDiff = false;
+      if (notify) {
+        notifyListeners();
+      }
+      return;
+    }
+
+    isLoadingCommitFiles = true;
+    if (notify) {
+      notifyListeners();
+    }
+    try {
+      selectedCommitFiles = await _gitService.loadCommitFiles(
+        repoPath: repo.path,
+        sha: commit.sha,
+      );
+      if (selectedCommitFiles.isEmpty) {
+        selectedCommitFilePath = null;
+        activeCommitDiff = null;
+        isLoadingCommitDiff = false;
+      } else {
+        final currentPath = selectedCommitFilePath;
+        final hasCurrent =
+            currentPath != null &&
+            selectedCommitFiles.any((change) => change.path == currentPath);
+        selectedCommitFilePath = hasCurrent
+            ? currentPath
+            : selectedCommitFiles.first.path;
+        await _loadSelectedCommitDiff(notify: false);
+      }
+    } catch (_) {
+      selectedCommitFiles = const <CommitFileChange>[];
+      selectedCommitFilePath = null;
+      activeCommitDiff = null;
+      isLoadingCommitDiff = false;
+    } finally {
+      isLoadingCommitFiles = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> _loadSelectedCommitDiff({bool notify = true}) async {
+    final repo = snapshot;
+    final commit = selectedCommit;
+    final change = selectedCommitFile;
+    if (repo == null || commit == null || change == null) {
+      activeCommitDiff = null;
+      isLoadingCommitDiff = false;
+      if (notify) {
+        notifyListeners();
+      }
+      return;
+    }
+
+    isLoadingCommitDiff = true;
+    if (notify) {
+      notifyListeners();
+    }
+    try {
+      activeCommitDiff = await _gitService.loadCommitDiff(
+        repoPath: repo.path,
+        sha: commit.sha,
+        change: change,
+      );
+    } catch (_) {
+      activeCommitDiff = 'Unable to load diff preview.';
+    } finally {
+      isLoadingCommitDiff = false;
       notifyListeners();
     }
   }

@@ -294,13 +294,16 @@ class _CommitRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final baseRowColor = isOdd ? const Color(0xFFF8FAFC) : Colors.white;
+    final baseRowColor = commit.isUnpushed
+        ? (isOdd ? const Color(0xFFFFFBF4) : const Color(0xFFFFFDF8))
+        : (isOdd ? const Color(0xFFF8FAFC) : Colors.white);
     final highlight = isSelected ? const Color(0xFFF0F6FF) : baseRowColor;
     final tagRef = commit.refs.where((ref) => ref.startsWith('tag:')).toList();
     final branchRef = commit.refs
         .where((ref) => !ref.startsWith('tag:'))
         .toList();
     final laneTone = _nodeColorForCommit(commit);
+    final unpushedTone = const Color(0xFFB54708);
 
     return InkWell(
       onTap: onTap,
@@ -324,6 +327,10 @@ class _CommitRow extends StatelessWidget {
                 alignment: Alignment.centerLeft,
                 child: Row(
                   children: [
+                    if (commit.isUnpushed) ...[
+                      _InlineRefMarker(text: 'UNPUSHED', tone: unpushedTone),
+                      const SizedBox(width: 6),
+                    ],
                     if (branchRef.isNotEmpty) ...[
                       _InlineRefMarker(text: branchRef.first, tone: laneTone),
                       const SizedBox(width: 6),
@@ -895,81 +902,321 @@ class _CommitGraphMetrics {
 }
 
 class _DetailsCard extends StatelessWidget {
-  const _DetailsCard({required this.commit});
+  const _DetailsCard({required this.controller, required this.commit});
 
+  final WorkbenchController controller;
   final CommitEntry? commit;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final selectedChange = controller.selectedCommitFile;
 
     return SurfaceCard(
-      padding: const EdgeInsets.fromLTRB(18, 16, 18, 18),
-      child: SingleChildScrollView(
-        child: commit == null
-            ? Padding(
-                padding: const EdgeInsets.only(top: 16),
-                child: Center(
-                  child: Text(
-                    'Select a commit to inspect it.',
-                    style: theme.textTheme.bodyLarge?.copyWith(
-                      color: const Color(0xFF667085),
-                    ),
-                    textAlign: TextAlign.center,
+      padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
+      child: commit == null
+          ? Center(
+              child: Text(
+                'Select a commit to inspect it.',
+                style: theme.textTheme.bodyLarge?.copyWith(
+                  color: const Color(0xFF667085),
+                ),
+                textAlign: TextAlign.center,
+              ),
+            )
+          : Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  commit!.message,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.titleMedium?.copyWith(fontSize: 14),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  '${commit!.sha}  ${commit!.author}  ${commit!.relativeTime}',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: const Color(0xFF667085),
+                    fontFamily: _monoFontFamily,
+                    fontSize: 11,
                   ),
                 ),
-              )
-            : Column(
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 6,
+                  runSpacing: 6,
+                  children: [
+                    if (commit!.isUnpushed)
+                      const _RefBadge(label: 'Not pushed'),
+                    for (final ref in commit!.refs) _RefBadge(label: ref),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        '${commit!.filesChanged} files',
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: const Color(0xFF667085),
+                          fontFamily: _monoFontFamily,
+                          fontSize: 11,
+                        ),
+                      ),
+                    ),
+                    _DeltaToken(
+                      value: '+${commit!.insertions}',
+                      color: commit!.insertions == 0
+                          ? const Color(0xFF98A2B3)
+                          : const Color(0xFF1F9D74),
+                    ),
+                    const SizedBox(width: 8),
+                    _DeltaToken(
+                      value: '-${commit!.deletions}',
+                      color: commit!.deletions == 0
+                          ? const Color(0xFF98A2B3)
+                          : const Color(0xFFD9483D),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                Row(
+                  children: [
+                    Text('Files', style: theme.textTheme.labelLarge),
+                    const Spacer(),
+                    if (!controller.isLoadingCommitFiles)
+                      Text(
+                        '${controller.selectedCommitFiles.length}',
+                        style: theme.textTheme.labelSmall?.copyWith(
+                          color: const Color(0xFF667085),
+                          fontFamily: _monoFontFamily,
+                        ),
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                if (controller.isLoadingCommitFiles)
+                  const SizedBox(
+                    height: 22,
+                    width: 22,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                else if (controller.selectedCommitFiles.isEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: Text(
+                      'No file list available for this commit.',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: const Color(0xFF667085),
+                      ),
+                    ),
+                  )
+                else
+                  SizedBox(
+                    height: 132,
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(12),
+                      child: DecoratedBox(
+                        decoration: const BoxDecoration(
+                          color: Color(0xFFF6F8FB),
+                        ),
+                        child: ListView(
+                          children: [
+                            for (final change in controller.selectedCommitFiles)
+                              _CommitFileChangeRow(
+                                change: change,
+                                isSelected: selectedChange?.path == change.path,
+                                onTap: () => unawaited(
+                                  controller.selectCommitFile(change.path),
+                                ),
+                              ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                const SizedBox(height: 10),
+                Text('Patch', style: theme.textTheme.labelLarge),
+                const SizedBox(height: 8),
+                Expanded(
+                  child: selectedChange == null
+                      ? Text(
+                          'Select a changed file to inspect its patch.',
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: const Color(0xFF667085),
+                          ),
+                        )
+                      : _CommitPatchPreview(
+                          diffText:
+                              controller.activeCommitDiff ??
+                              'No diff available for this file.',
+                          isLoading: controller.isLoadingCommitDiff,
+                        ),
+                ),
+              ],
+            ),
+    );
+  }
+}
+
+Color _commitChangeTone(String shortStatus) {
+  switch (shortStatus) {
+    case 'A':
+      return const Color(0xFF1F9D74);
+    case 'D':
+      return const Color(0xFFD9483D);
+    case 'R':
+      return const Color(0xFF7C3AED);
+    case 'C':
+      return const Color(0xFF2563EB);
+    case 'M':
+      return const Color(0xFFB54708);
+    default:
+      return const Color(0xFF667085);
+  }
+}
+
+String _commitChangeLabel(CommitFileChange change) {
+  switch (change.shortStatus) {
+    case 'A':
+      return 'added';
+    case 'D':
+      return 'deleted';
+    case 'R':
+      return 'renamed';
+    case 'C':
+      return 'copied';
+    case 'M':
+      return 'modified';
+    default:
+      return change.statusCode.toLowerCase();
+  }
+}
+
+class _CommitFileChangeRow extends StatelessWidget {
+  const _CommitFileChangeRow({
+    required this.change,
+    required this.isSelected,
+    required this.onTap,
+  });
+
+  final CommitFileChange change;
+  final bool isSelected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final tone = _commitChangeTone(change.shortStatus);
+    final statusLabel = _commitChangeLabel(change);
+    return InkWell(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+        decoration: BoxDecoration(
+          color: isSelected ? const Color(0xFFEAF3FF) : Colors.transparent,
+          border: const Border(bottom: BorderSide(color: Color(0xFFE7ECF2))),
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              constraints: const BoxConstraints(minWidth: 26),
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              decoration: BoxDecoration(
+                color: tone.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(999),
+              ),
+              child: Text(
+                change.shortStatus,
+                style: TextStyle(
+                  color: tone,
+                  fontFamily: _monoFontFamily,
+                  fontSize: 10,
+                  fontWeight: FontWeight.w800,
+                  height: 1.0,
+                ),
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    'Details',
-                    style: theme.textTheme.labelLarge?.copyWith(
-                      color: const Color(0xFF667085),
-                      letterSpacing: 0.4,
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  Text(
-                    commit!.message,
-                    style: theme.textTheme.titleLarge?.copyWith(fontSize: 16),
-                  ),
-                  const SizedBox(height: 10),
-                  Text(
-                    '${commit!.sha} by ${commit!.author}',
+                    change.path,
                     style: theme.textTheme.bodyMedium?.copyWith(
-                      color: const Color(0xFF667085),
                       fontFamily: _monoFontFamily,
+                      fontSize: 12,
                     ),
                   ),
-                  const SizedBox(height: 20),
-                  Text('Refs', style: theme.textTheme.labelLarge),
-                  const SizedBox(height: 8),
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
-                    children: [
-                      for (final ref in commit!.refs) _RefBadge(label: ref),
-                    ],
-                  ),
-                  const SizedBox(height: 20),
-                  Text('Change Summary', style: theme.textTheme.labelLarge),
-                  const SizedBox(height: 10),
-                  _DetailMetric(
-                    label: 'Files changed',
-                    value: '${commit!.filesChanged}',
-                  ),
-                  _DetailMetric(
-                    label: 'Insertions',
-                    value: '+${commit!.insertions}',
-                  ),
-                  _DetailMetric(
-                    label: 'Deletions',
-                    value: '-${commit!.deletions}',
-                  ),
+                  if (change.originalPath != null) ...[
+                    const SizedBox(height: 3),
+                    Text(
+                      '${change.originalPath} -> ${change.path}',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: const Color(0xFF667085),
+                        fontFamily: _monoFontFamily,
+                        fontSize: 11,
+                      ),
+                    ),
+                  ],
                 ],
               ),
+            ),
+            const SizedBox(width: 10),
+            Text(
+              statusLabel,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: const Color(0xFF667085),
+                fontSize: 11,
+              ),
+            ),
+          ],
+        ),
       ),
+    );
+  }
+}
+
+class _CommitPatchPreview extends StatefulWidget {
+  const _CommitPatchPreview({required this.diffText, required this.isLoading});
+
+  final String diffText;
+  final bool isLoading;
+
+  @override
+  State<_CommitPatchPreview> createState() => _CommitPatchPreviewState();
+}
+
+class _CommitPatchPreviewState extends State<_CommitPatchPreview> {
+  late final ScrollController _verticalScrollController;
+  late final ScrollController _horizontalScrollController;
+
+  @override
+  void initState() {
+    super.initState();
+    _verticalScrollController = ScrollController();
+    _horizontalScrollController = ScrollController();
+  }
+
+  @override
+  void dispose() {
+    _verticalScrollController.dispose();
+    _horizontalScrollController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return _PatchViewer(
+      diffText: widget.diffText,
+      isLoading: widget.isLoading,
+      verticalController: _verticalScrollController,
+      horizontalController: _horizontalScrollController,
     );
   }
 }

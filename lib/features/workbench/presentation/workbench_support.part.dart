@@ -353,33 +353,6 @@ class _RefBadge extends StatelessWidget {
   }
 }
 
-class _DetailMetric extends StatelessWidget {
-  const _DetailMetric({required this.label, required this.value});
-
-  final String label;
-  final String value;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 10),
-      child: Row(
-        children: [
-          Text(label, style: theme.textTheme.bodyLarge),
-          const Spacer(),
-          Text(
-            value,
-            style: theme.textTheme.titleMedium?.copyWith(
-              fontFamily: _monoFontFamily,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
 List<_WorkingTreeDirectoryGroup> _groupWorkingTreeEntries(
   List<WorkingTreeEntry> entries,
 ) {

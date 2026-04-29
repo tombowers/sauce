@@ -77,6 +77,7 @@ const mockRepoSnapshot = RepoSnapshot(
       afterLaneKeys: ['main'],
       hasTopContinuation: false,
       visibleChildLaneKeys: ['main'],
+      isUnpushed: true,
     ),
     CommitEntry(
       sha: '7ad10ce',
@@ -97,6 +98,7 @@ const mockRepoSnapshot = RepoSnapshot(
       afterLaneKeys: ['main'],
       hasTopContinuation: true,
       visibleChildLaneKeys: ['main'],
+      isUnpushed: false,
     ),
     CommitEntry(
       sha: '3f82ea9',
@@ -117,6 +119,7 @@ const mockRepoSnapshot = RepoSnapshot(
       afterLaneKeys: ['main', 'side-a'],
       hasTopContinuation: true,
       visibleChildLaneKeys: ['main', 'side-a'],
+      isUnpushed: false,
     ),
     CommitEntry(
       sha: '91d5ab3',
@@ -137,6 +140,7 @@ const mockRepoSnapshot = RepoSnapshot(
       afterLaneKeys: ['main', 'side-a'],
       hasTopContinuation: true,
       visibleChildLaneKeys: ['side-a'],
+      isUnpushed: false,
     ),
     CommitEntry(
       sha: 'f6ee2d1',
@@ -157,6 +161,7 @@ const mockRepoSnapshot = RepoSnapshot(
       afterLaneKeys: ['main'],
       hasTopContinuation: true,
       visibleChildLaneKeys: [],
+      isUnpushed: false,
     ),
   ],
 );

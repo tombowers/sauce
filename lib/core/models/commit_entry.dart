@@ -18,6 +18,7 @@ class CommitEntry {
     required this.afterLaneKeys,
     required this.hasTopContinuation,
     required this.visibleChildLaneKeys,
+    required this.isUnpushed,
   });
 
   final String sha;
@@ -38,4 +39,21 @@ class CommitEntry {
   final List<String> afterLaneKeys;
   final bool hasTopContinuation;
   final List<String> visibleChildLaneKeys;
+  final bool isUnpushed;
+}
+
+class CommitFileChange {
+  const CommitFileChange({
+    required this.path,
+    required this.statusCode,
+    this.originalPath,
+  });
+
+  final String path;
+  final String statusCode;
+  final String? originalPath;
+
+  bool get isRename => statusCode.startsWith('R');
+  bool get isCopy => statusCode.startsWith('C');
+  String get shortStatus => statusCode.isEmpty ? '?' : statusCode[0];
 }

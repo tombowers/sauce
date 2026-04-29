@@ -282,6 +282,6 @@ class _WorkbenchInspector extends StatelessWidget {
       );
     }
 
-    return _DetailsCard(commit: selectedCommit);
+    return _DetailsCard(controller: controller, commit: selectedCommit);
   }
 }

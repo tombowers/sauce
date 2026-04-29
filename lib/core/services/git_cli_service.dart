@@ -49,12 +49,15 @@ class GitCliService {
       'refs/heads',
       'refs/remotes',
     ], workingDirectory: resolvedPath);
+    final branches = _parseBranches(branchesResult.stdout);
+    final unpushedShas = await _loadUnpushedCommitShas(resolvedPath, branches);
 
     return _buildSnapshot(
       resolvedPath: resolvedPath,
       statusOutput: statusResult.stdout,
       logOutput: logResult.stdout,
-      branchOutput: branchesResult.stdout,
+      branches: branches,
+      unpushedShas: unpushedShas,
     );
   }
 
@@ -153,6 +156,96 @@ class GitCliService {
     return sections.join('\n\n');
   }
 
+  Future<List<CommitFileChange>> loadCommitFiles({
+    required String repoPath,
+    required String sha,
+  }) async {
+    final result = await _runGitAllowFailure([
+      'show',
+      '--format=',
+      '--name-status',
+      '--find-renames',
+      '--find-copies',
+      sha,
+      '--',
+    ], workingDirectory: repoPath);
+    if (result.exitCode != 0) {
+      return const <CommitFileChange>[];
+    }
+
+    final changes = <CommitFileChange>[];
+    for (final rawLine
+        in (result.stdout as String).replaceAll('\r\n', '\n').split('\n')) {
+      final line = rawLine.trimRight();
+      if (line.isEmpty) {
+        continue;
+      }
+      final fields = line.split('\t');
+      if (fields.length < 2) {
+        continue;
+      }
+      final statusCode = fields[0].trim();
+      if (statusCode.startsWith('R') || statusCode.startsWith('C')) {
+        if (fields.length < 3) {
+          continue;
+        }
+        changes.add(
+          CommitFileChange(
+            path: fields[2].trim(),
+            statusCode: statusCode,
+            originalPath: fields[1].trim(),
+          ),
+        );
+        continue;
+      }
+      changes.add(
+        CommitFileChange(path: fields[1].trim(), statusCode: statusCode),
+      );
+    }
+    return changes;
+  }
+
+  Future<String> loadCommitDiff({
+    required String repoPath,
+    required String sha,
+    required CommitFileChange change,
+  }) async {
+    final result = await _runGitAllowFailure([
+      'show',
+      '--format=',
+      '--find-renames',
+      '--find-copies',
+      sha,
+      '--',
+      change.path,
+    ], workingDirectory: repoPath);
+    if (result.exitCode != 0) {
+      return 'Unable to load diff preview.';
+    }
+    final diff = (result.stdout as String).trimRight();
+    if (diff.isNotEmpty) {
+      return diff;
+    }
+    if (change.originalPath != null && change.originalPath != change.path) {
+      final retry = await _runGitAllowFailure([
+        'show',
+        '--format=',
+        '--find-renames',
+        '--find-copies',
+        sha,
+        '--',
+        change.originalPath!,
+      ], workingDirectory: repoPath);
+      if (retry.exitCode == 0) {
+        final retryDiff = (retry.stdout as String).trimRight();
+        if (retryDiff.isNotEmpty) {
+          return retryDiff;
+        }
+      }
+    }
+    return 'No diff available for this file.';
+  }
+
   Future<String> _resolveRepositoryRoot(String repoPath) async {
     final result = await _runGit([
       'rev-parse',
@@ -200,11 +293,11 @@ class GitCliService {
     required String resolvedPath,
     required String statusOutput,
     required String logOutput,
-    required String branchOutput,
+    required List<BranchEntry> branches,
+    required Set<String> unpushedShas,
   }) {
     final statusSnapshot = _parseWorkingTree(statusOutput);
-    final commits = _parseCommits(logOutput);
-    final branches = _parseBranches(branchOutput);
+    final commits = _parseCommits(logOutput, unpushedShas);
 
     return RepoSnapshot(
       name: _repoNameFromPath(resolvedPath),
@@ -428,7 +521,7 @@ class GitCliService {
     }
   }
 
-  List<CommitEntry> _parseCommits(String logOutput) {
+  List<CommitEntry> _parseCommits(String logOutput, Set<String> unpushedShas) {
     final lines = logOutput.replaceAll('\r\n', '\n').split('\n');
     final commits = <_PendingCommit>[];
     _PendingCommit? current;
@@ -473,7 +566,7 @@ class GitCliService {
       commits.add(current);
     }
 
-    return _applyGraphLayout(commits);
+    return _applyGraphLayout(commits, unpushedShas);
   }
 
   List<String> _parseParents(String parents) {
@@ -508,7 +601,10 @@ class GitCliService {
         .trimRight();
   }
 
-  List<CommitEntry> _applyGraphLayout(List<_PendingCommit> commits) {
+  List<CommitEntry> _applyGraphLayout(
+    List<_PendingCommit> commits,
+    Set<String> unpushedShas,
+  ) {
     final activeLanes = <_ActiveLane>[];
     final laidOutPending = <_LaidOutPendingCommit>[];
     var generatedLaneId = 0;
@@ -605,8 +701,38 @@ class GitCliService {
           afterLaneKeys: laidOutPending[index].afterLaneKeys,
           hasTopContinuation: laidOutPending[index].hasTopContinuation,
           visibleChildLaneKeys: visibleBelowByIndex[index] ?? const [],
+          isUnpushed: unpushedShas.contains(laidOutPending[index].commit.sha),
         ),
     ];
+  }
+
+  Future<Set<String>> _loadUnpushedCommitShas(
+    String repoPath,
+    List<BranchEntry> branches,
+  ) async {
+    final currentBranches = branches.where(
+      (branch) => !branch.isRemote && branch.isCurrent,
+    );
+    final currentBranch = currentBranches.isEmpty
+        ? null
+        : currentBranches.first;
+    final upstream = currentBranch?.upstream;
+    if (upstream == null || upstream.isEmpty) {
+      return <String>{};
+    }
+    final result = await _runGitAllowFailure([
+      'rev-list',
+      '$upstream..HEAD',
+    ], workingDirectory: repoPath);
+    if (result.exitCode != 0) {
+      return <String>{};
+    }
+    return (result.stdout as String)
+        .replaceAll('\r\n', '\n')
+        .split('\n')
+        .map((line) => line.trim())
+        .where((line) => line.isNotEmpty)
+        .toSet();
   }
 
   String _repoNameFromPath(String path) {
@@ -713,6 +839,7 @@ class _PendingCommit {
     required List<String> afterLaneKeys,
     required bool hasTopContinuation,
     required List<String> visibleChildLaneKeys,
+    required bool isUnpushed,
   }) {
     return CommitEntry(
       sha: sha,
@@ -733,6 +860,7 @@ class _PendingCommit {
       afterLaneKeys: afterLaneKeys,
       hasTopContinuation: hasTopContinuation,
       visibleChildLaneKeys: visibleChildLaneKeys,
+      isUnpushed: isUnpushed,
     );
   }
 }
