@@ -1,3 +1,4 @@
+import 'branch_entry.dart';
 import 'commit_entry.dart';
 import 'working_tree_entry.dart';
 
@@ -12,6 +13,7 @@ class RepoSnapshot {
     required this.unstagedCount,
     required this.untrackedCount,
     required this.workingTree,
+    required this.branches,
     required this.commits,
   });
 
@@ -24,5 +26,6 @@ class RepoSnapshot {
   final int unstagedCount;
   final int untrackedCount;
   final WorkingTreeSnapshot workingTree;
+  final List<BranchEntry> branches;
   final List<CommitEntry> commits;
 }

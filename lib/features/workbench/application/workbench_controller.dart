@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 
 import '../../../core/models/commit_entry.dart';
+import '../../../core/models/branch_entry.dart';
 import '../../../core/models/repo_snapshot.dart';
 import '../../../core/models/working_tree_entry.dart';
 import '../../../core/services/git_cli_service.dart';
@@ -106,6 +107,14 @@ class WorkbenchController extends ChangeNotifier {
 
   bool get hasRepository => snapshot != null;
 
+  List<BranchEntry> get localBranches =>
+      snapshot?.branches.where((branch) => !branch.isRemote).toList() ??
+      const [];
+
+  List<BranchEntry> get remoteBranches =>
+      snapshot?.branches.where((branch) => branch.isRemote).toList() ??
+      const [];
+
   List<WorkingTreeEntry> get filteredWorkingTreeEntries {
     final workingTree = snapshot?.workingTree;
     if (workingTree == null) {
@@ -114,13 +123,27 @@ class WorkbenchController extends ChangeNotifier {
     return workingTree.entriesForFilter(workingTreeFilter);
   }
 
+  List<WorkingTreeEntry> get visibleWorkingTreeEntries {
+    final workingTree = snapshot?.workingTree;
+    if (workingTree == null) {
+      return const [];
+    }
+    if (workingTreeFilter == WorkingTreeViewFilter.unstaged) {
+      return [
+        ...workingTree.entriesForFilter(WorkingTreeViewFilter.unstaged),
+        ...workingTree.entriesForFilter(WorkingTreeViewFilter.staged),
+      ];
+    }
+    return filteredWorkingTreeEntries;
+  }
+
   WorkingTreeEntry? get selectedWorkingTreeEntry {
     final repo = snapshot;
     if (repo == null) {
       return null;
     }
     final selectedPath = _selectedWorkingTreePathByRepoPath[repo.path];
-    final entries = filteredWorkingTreeEntries;
+    final entries = visibleWorkingTreeEntries;
     if (entries.isEmpty) {
       return null;
     }
@@ -210,8 +233,25 @@ class WorkbenchController extends ChangeNotifier {
 
   void selectCommit(int index) {
     selectedCommitIndex = index;
+    if (selectedView != WorkbenchPrimaryView.history) {
+      selectedView = WorkbenchPrimaryView.history;
+      unawaited(_persistSelectedView());
+    }
     _persistSelectedCommitForCurrentRepo();
     notifyListeners();
+  }
+
+  Future<void> selectUncommittedChanges() async {
+    final repo = snapshot;
+    if (repo != null) {
+      _ensureWorkingTreeSelection(repo);
+    }
+    if (selectedView != WorkbenchPrimaryView.changes) {
+      selectedView = WorkbenchPrimaryView.changes;
+      await _persistSelectedView();
+    }
+    notifyListeners();
+    await _loadDiffForCurrentSelection();
   }
 
   void dismissError() {
@@ -241,6 +281,35 @@ class WorkbenchController extends ChangeNotifier {
     }
   }
 
+  Future<void> switchToBranch(BranchEntry branch) async {
+    if (!hasRepository || isRunningCommand) {
+      return;
+    }
+    if (!branch.isRemote) {
+      if (branch.isCurrent) {
+        return;
+      }
+      await _runUserGitAction(['switch', branch.name]);
+      return;
+    }
+
+    final existingLocal = localBranches.where(
+      (localBranch) => localBranch.shortName == branch.shortName,
+    );
+    if (existingLocal.isNotEmpty) {
+      await switchToBranch(existingLocal.first);
+      return;
+    }
+
+    await _runUserGitAction([
+      'switch',
+      '--track',
+      '-c',
+      branch.shortName,
+      branch.name,
+    ]);
+  }
+
   Future<void> setPrimaryView(WorkbenchPrimaryView view) async {
     if (selectedView == view) {
       return;
@@ -252,8 +321,7 @@ class WorkbenchController extends ChangeNotifier {
         _ensureWorkingTreeSelection(repo);
       }
     }
-    final store = await _store();
-    await store.writeString(_selectedViewKey, view.name);
+    await _persistSelectedView();
     notifyListeners();
     if (view == WorkbenchPrimaryView.changes) {
       await _loadDiffForCurrentSelection();
@@ -290,8 +358,10 @@ class WorkbenchController extends ChangeNotifier {
     if (repo == null) {
       return;
     }
+    selectedView = WorkbenchPrimaryView.changes;
     _selectedWorkingTreePathByRepoPath[repo.path] = path;
     _workingTreeSelectionAnchorPath = path;
+    unawaited(_persistSelectedView());
     unawaited(_persistSelectedWorkingTreePathMap());
     notifyListeners();
     await _loadDiffForCurrentSelection();
@@ -308,6 +378,7 @@ class WorkbenchController extends ChangeNotifier {
       return;
     }
 
+    selectedView = WorkbenchPrimaryView.changes;
     _selectedWorkingTreePathByRepoPath[repo.path] = path;
 
     if (isShiftPressed && visiblePaths.isNotEmpty) {
@@ -334,6 +405,7 @@ class WorkbenchController extends ChangeNotifier {
       selectedWorkingTreeBatchPaths.clear();
     }
 
+    unawaited(_persistSelectedView());
     unawaited(_persistSelectedWorkingTreePathMap());
     notifyListeners();
     await _loadDiffForCurrentSelection();
@@ -341,6 +413,15 @@ class WorkbenchController extends ChangeNotifier {
 
   Future<void> stageWorkingTreeEntry(WorkingTreeEntry entry) async {
     await _runUserGitAction(['add', '--', entry.path]);
+  }
+
+  Future<void> stageWorkingTreeEntries(List<WorkingTreeEntry> entries) async {
+    final paths = entries.map((entry) => entry.path).toSet().toList();
+    if (paths.isEmpty) {
+      return;
+    }
+    selectedWorkingTreeBatchPaths.clear();
+    await _runUserGitAction(['add', '--', ...paths]);
   }
 
   Future<void> stageAllWorkingTreeEntries() async {
@@ -361,6 +442,15 @@ class WorkbenchController extends ChangeNotifier {
 
   Future<void> unstageWorkingTreeEntry(WorkingTreeEntry entry) async {
     await _runUserGitAction(['reset', '--', entry.path]);
+  }
+
+  Future<void> unstageWorkingTreeEntries(List<WorkingTreeEntry> entries) async {
+    final paths = entries.map((entry) => entry.path).toSet().toList();
+    if (paths.isEmpty) {
+      return;
+    }
+    selectedWorkingTreeBatchPaths.clear();
+    await _runUserGitAction(['reset', '--', ...paths]);
   }
 
   Future<void> unstageAllWorkingTreeEntries() async {
@@ -565,8 +655,13 @@ class WorkbenchController extends ChangeNotifier {
     );
   }
 
+  Future<void> _persistSelectedView() async {
+    final store = await _store();
+    await store.writeString(_selectedViewKey, selectedView.name);
+  }
+
   void _ensureWorkingTreeSelection(RepoSnapshot repo) {
-    final entries = repo.workingTree.entriesForFilter(workingTreeFilter);
+    final entries = visibleWorkingTreeEntries;
     if (entries.isEmpty) {
       _selectedWorkingTreePathByRepoPath.remove(repo.path);
       activeDiff = null;

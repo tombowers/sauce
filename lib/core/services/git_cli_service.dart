@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import '../models/branch_entry.dart';
 import '../models/commit_entry.dart';
 import '../models/repo_snapshot.dart';
 import '../models/working_tree_entry.dart';
@@ -41,11 +42,19 @@ class GitCliService {
       logArgs.addAll(['HEAD', '--tags', '-n', '$_defaultHistoryDepth']);
     }
     final logResult = await _runGit(logArgs, workingDirectory: resolvedPath);
+    final branchesResult = await _runGit([
+      'for-each-ref',
+      '--sort=-committerdate',
+      '--format=%(refname:short)%x1f%(refname)%x1f%(upstream:short)%x1f%(HEAD)%x1f%(objectname:short)%x1f%(committerdate:relative)',
+      'refs/heads',
+      'refs/remotes',
+    ], workingDirectory: resolvedPath);
 
     return _buildSnapshot(
       resolvedPath: resolvedPath,
       statusOutput: statusResult.stdout,
       logOutput: logResult.stdout,
+      branchOutput: branchesResult.stdout,
     );
   }
 
@@ -191,9 +200,11 @@ class GitCliService {
     required String resolvedPath,
     required String statusOutput,
     required String logOutput,
+    required String branchOutput,
   }) {
     final statusSnapshot = _parseWorkingTree(statusOutput);
     final commits = _parseCommits(logOutput);
+    final branches = _parseBranches(branchOutput);
 
     return RepoSnapshot(
       name: _repoNameFromPath(resolvedPath),
@@ -205,8 +216,59 @@ class GitCliService {
       unstagedCount: statusSnapshot.workingTree.pendingCount,
       untrackedCount: statusSnapshot.workingTree.untrackedCount,
       workingTree: statusSnapshot.workingTree,
+      branches: branches,
       commits: commits,
     );
+  }
+
+  List<BranchEntry> _parseBranches(String branchOutput) {
+    final branches = <BranchEntry>[];
+    for (final rawLine in branchOutput.replaceAll('\r\n', '\n').split('\n')) {
+      final line = rawLine.trimRight();
+      if (line.isEmpty) {
+        continue;
+      }
+      final fields = line.contains('\x1f')
+          ? line.split('\x1f')
+          : line.split('%x1f');
+      if (fields.length < 6) {
+        continue;
+      }
+      final name = fields[0].trim();
+      final fullRefName = fields[1].trim();
+      final upstream = fields[2].trim().isEmpty ? null : fields[2].trim();
+      final headMarker = fields[3].trim();
+      final commitSha = fields[4].trim();
+      final relativeTime = fields[5].trim();
+      final isRemote = fullRefName.startsWith('refs/remotes/');
+      if (isRemote && name.endsWith('/HEAD')) {
+        continue;
+      }
+      branches.add(
+        BranchEntry(
+          name: name,
+          fullRefName: fullRefName,
+          isRemote: isRemote,
+          isCurrent: headMarker == '*',
+          upstream: upstream,
+          commitSha: commitSha,
+          relativeTime: relativeTime,
+        ),
+      );
+    }
+
+    final locals = branches.where((branch) => !branch.isRemote).toList()
+      ..sort(_compareBranches);
+    final remotes = branches.where((branch) => branch.isRemote).toList()
+      ..sort(_compareBranches);
+    return [...locals, ...remotes];
+  }
+
+  int _compareBranches(BranchEntry left, BranchEntry right) {
+    if (left.isCurrent != right.isCurrent) {
+      return left.isCurrent ? -1 : 1;
+    }
+    return left.name.compareTo(right.name);
   }
 
   _ParsedStatusSnapshot _parseWorkingTree(String statusOutput) {

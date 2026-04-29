@@ -1,3 +1,4 @@
+import '../models/branch_entry.dart';
 import '../models/commit_entry.dart';
 import '../models/repo_snapshot.dart';
 import '../models/working_tree_entry.dart';
@@ -18,6 +19,44 @@ const mockRepoSnapshot = RepoSnapshot(
     untrackedCount: 1,
     ignoredCount: 0,
   ),
+  branches: [
+    BranchEntry(
+      name: 'feat/workbench-shell',
+      fullRefName: 'refs/heads/feat/workbench-shell',
+      isRemote: false,
+      isCurrent: true,
+      upstream: 'origin/feat/workbench-shell',
+      commitSha: 'f2c41b7',
+      relativeTime: '3m ago',
+    ),
+    BranchEntry(
+      name: 'main',
+      fullRefName: 'refs/heads/main',
+      isRemote: false,
+      isCurrent: false,
+      upstream: 'origin/main',
+      commitSha: '91d5ab3',
+      relativeTime: '1h ago',
+    ),
+    BranchEntry(
+      name: 'origin/feat/workbench-shell',
+      fullRefName: 'refs/remotes/origin/feat/workbench-shell',
+      isRemote: true,
+      isCurrent: false,
+      upstream: null,
+      commitSha: '7ad10ce',
+      relativeTime: '18m ago',
+    ),
+    BranchEntry(
+      name: 'origin/main',
+      fullRefName: 'refs/remotes/origin/main',
+      isRemote: true,
+      isCurrent: false,
+      upstream: null,
+      commitSha: 'f6ee2d1',
+      relativeTime: '2h ago',
+    ),
+  ],
   commits: [
     CommitEntry(
       sha: 'f2c41b7',
