@@ -176,6 +176,7 @@ class WorkbenchController extends ChangeNotifier {
       );
       snapshot = nextSnapshot;
       repoPath = nextSnapshot.path;
+      _syncPrimaryViewForSnapshot(nextSnapshot);
       selectedCommitIndex = _resolveSelectedCommitIndex(nextSnapshot);
       _pruneWorkingTreeBatchSelection(nextSnapshot);
       _ensureWorkingTreeSelection(nextSnapshot);
@@ -244,6 +245,14 @@ class WorkbenchController extends ChangeNotifier {
   Future<void> selectUncommittedChanges() async {
     final repo = snapshot;
     if (repo != null) {
+      if (repo.workingTree.dirtyCount == 0) {
+        if (selectedView != WorkbenchPrimaryView.history) {
+          selectedView = WorkbenchPrimaryView.history;
+          await _persistSelectedView();
+        }
+        notifyListeners();
+        return;
+      }
       _ensureWorkingTreeSelection(repo);
     }
     if (selectedView != WorkbenchPrimaryView.changes) {
@@ -658,6 +667,14 @@ class WorkbenchController extends ChangeNotifier {
   Future<void> _persistSelectedView() async {
     final store = await _store();
     await store.writeString(_selectedViewKey, selectedView.name);
+  }
+
+  void _syncPrimaryViewForSnapshot(RepoSnapshot repo) {
+    if (repo.workingTree.dirtyCount == 0 &&
+        selectedView == WorkbenchPrimaryView.changes) {
+      selectedView = WorkbenchPrimaryView.history;
+      unawaited(_persistSelectedView());
+    }
   }
 
   void _ensureWorkingTreeSelection(RepoSnapshot repo) {
