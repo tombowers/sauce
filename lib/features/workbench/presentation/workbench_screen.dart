@@ -28,6 +28,7 @@ typedef _WorkingTreeEntryActivator =
       required List<String> visiblePaths,
       required bool isControlPressed,
       required bool isShiftPressed,
+      required WorkingTreeSelectionScope selectionScope,
     });
 const _graphLaneColors = <Color>[
   Color(0xFFFF6B6B),
@@ -188,6 +189,7 @@ class _WorkbenchScreenState extends State<WorkbenchScreen>
                               controller: _controller,
                               onOpenRepoLibrary: _openRepoLibrary,
                               onOpenBranchSwitcher: _openBranchSwitcher,
+                              onOpenChangesDock: _openChangesDock,
                             ),
                             if (_controller.errorMessage != null) ...[
                               const SizedBox(height: 14),
@@ -328,51 +330,39 @@ class _WorkbenchScreenState extends State<WorkbenchScreen>
       context: context,
       barrierDismissible: true,
       builder: (context) {
-        return Dialog(
-          backgroundColor: Colors.transparent,
-          insetPadding: const EdgeInsets.all(20),
-          child: SizedBox(
-            width: 1180,
-            height: 760,
-            child: SurfaceCard(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
+        return AnimatedBuilder(
+          animation: _controller,
+          builder: (context, _) {
+            return Dialog(
+              backgroundColor: Colors.transparent,
+              insetPadding: const EdgeInsets.all(20),
+              child: SizedBox(
+                width: 1180,
+                height: 760,
+                child: SurfaceCard(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(
-                        'Working tree',
-                        style: Theme.of(context).textTheme.titleMedium,
+                      _CommitComposer(
+                        controller: _controller,
+                        onClose: () => Navigator.of(context).pop(),
                       ),
-                      const SizedBox(width: 10),
-                      Text(
-                        'Stage, inspect, and discard local changes without leaving the graph.',
-                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: const Color(0xFF667085),
+                      const SizedBox(height: 12),
+                      const Divider(height: 1, color: Color(0xFFE7ECF2)),
+                      const SizedBox(height: 16),
+                      Expanded(
+                        child: _ChangesWorkspace(
+                          controller: _controller,
+                          isCompact: false,
                         ),
-                      ),
-                      const Spacer(),
-                      IconButton(
-                        onPressed: () => Navigator.of(context).pop(),
-                        icon: const Icon(Icons.close_rounded),
-                        tooltip: 'Close dock',
                       ),
                     ],
                   ),
-                  const SizedBox(height: 12),
-                  const Divider(height: 1, color: Color(0xFFE7ECF2)),
-                  const SizedBox(height: 16),
-                  Expanded(
-                    child: _ChangesWorkspace(
-                      controller: _controller,
-                      isCompact: false,
-                    ),
-                  ),
-                ],
+                ),
               ),
-            ),
-          ),
+            );
+          },
         );
       },
     );

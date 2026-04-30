@@ -87,6 +87,7 @@ class _CompactWorkbench extends StatelessWidget {
           controller: controller,
           onOpenRepoLibrary: onOpenRepoLibrary,
           onOpenBranchSwitcher: onOpenBranchSwitcher,
+          onOpenChangesDock: onOpenChangesDock,
         ),
         if (controller.errorMessage != null) ...[
           const SizedBox(height: 14),

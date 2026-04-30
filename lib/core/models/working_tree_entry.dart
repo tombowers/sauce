@@ -1,5 +1,7 @@
 enum WorkingTreeViewFilter { unstaged, staged, all, ignored }
 
+enum WorkingTreeSelectionScope { unstaged, staged }
+
 enum GitFileStatusKind {
   unmodified,
   modified,
@@ -45,7 +47,7 @@ class WorkingTreeEntry {
   bool matchesFilter(WorkingTreeViewFilter filter) {
     switch (filter) {
       case WorkingTreeViewFilter.unstaged:
-        return (hasPendingChanges || isUntracked) && !hasStagedChanges;
+        return hasPendingChanges || isUntracked;
       case WorkingTreeViewFilter.staged:
         return hasStagedChanges;
       case WorkingTreeViewFilter.all:

@@ -156,6 +156,7 @@ class _ChangesListCard extends StatelessWidget {
                   canRunActions: !controller.isRunningCommand,
                   selectedBatchPaths: controller.selectedWorkingTreeBatchPaths,
                   selectedPath: controller.selectedWorkingTreeEntry?.path,
+                  controller: controller,
                   onActivate: controller.activateWorkingTreeEntry,
                   onStageAll: controller.stageAllWorkingTreeEntries,
                   onUnstageAll: controller.unstageAllWorkingTreeEntries,
@@ -185,6 +186,7 @@ class _ChangesListCard extends StatelessWidget {
                             groups: groups,
                             selectedBatchPaths:
                                 controller.selectedWorkingTreeBatchPaths,
+                            selectedScope: controller.selectedWorkingTreeScope,
                             selectedPath:
                                 controller.selectedWorkingTreeEntry?.path,
                             onActivate: controller.activateWorkingTreeEntry,
@@ -194,6 +196,7 @@ class _ChangesListCard extends StatelessWidget {
                             entries: entries,
                             selectedBatchPaths:
                                 controller.selectedWorkingTreeBatchPaths,
+                            selectedScope: controller.selectedWorkingTreeScope,
                             selectedPath:
                                 controller.selectedWorkingTreeEntry?.path,
                             onActivate: controller.activateWorkingTreeEntry,
@@ -220,6 +223,7 @@ class _StagingBucketsList extends StatelessWidget {
   const _StagingBucketsList({
     required this.unstagedEntries,
     required this.stagedEntries,
+    required this.controller,
     required this.layout,
     required this.canRunActions,
     required this.selectedBatchPaths,
@@ -235,6 +239,7 @@ class _StagingBucketsList extends StatelessWidget {
 
   final List<WorkingTreeEntry> unstagedEntries;
   final List<WorkingTreeEntry> stagedEntries;
+  final WorkbenchController controller;
   final WorkingTreeLayout layout;
   final bool canRunActions;
   final Set<String> selectedBatchPaths;
@@ -349,7 +354,9 @@ class _StagingBucketsList extends StatelessWidget {
                   Expanded(
                     child: _WorkingTreeBucketSection(
                       entries: unstagedEntries,
+                      selectionScope: WorkingTreeSelectionScope.unstaged,
                       layout: layout,
+                      controller: controller,
                       selectedBatchPaths: selectedBatchPaths,
                       selectedPath: selectedPath,
                       onActivate: onActivate,
@@ -371,7 +378,9 @@ class _StagingBucketsList extends StatelessWidget {
                   Expanded(
                     child: _WorkingTreeBucketSection(
                       entries: stagedEntries,
+                      selectionScope: WorkingTreeSelectionScope.staged,
                       layout: layout,
+                      controller: controller,
                       selectedBatchPaths: selectedBatchPaths,
                       selectedPath: selectedPath,
                       onActivate: onActivate,
@@ -405,7 +414,9 @@ class _StagingBucketsList extends StatelessWidget {
 class _WorkingTreeBucketSection extends StatelessWidget {
   const _WorkingTreeBucketSection({
     required this.entries,
+    required this.selectionScope,
     required this.layout,
+    required this.controller,
     required this.selectedBatchPaths,
     required this.selectedPath,
     required this.onActivate,
@@ -414,7 +425,9 @@ class _WorkingTreeBucketSection extends StatelessWidget {
   });
 
   final List<WorkingTreeEntry> entries;
+  final WorkingTreeSelectionScope selectionScope;
   final WorkingTreeLayout layout;
+  final WorkbenchController controller;
   final Set<String> selectedBatchPaths;
   final String? selectedPath;
   final _WorkingTreeEntryActivator onActivate;
@@ -447,6 +460,7 @@ class _WorkingTreeBucketSection extends StatelessWidget {
             _DirectorySection(
               group: group,
               selectedBatchPaths: selectedBatchPaths,
+              selectedScope: selectionScope,
               selectedPath: selectedPath,
               onActivate: onActivate,
               compact: compact,
@@ -460,7 +474,10 @@ class _WorkingTreeBucketSection extends StatelessWidget {
         itemBuilder: (context, index) => _WorkingTreeRow(
           entry: entries[index],
           isOdd: index.isOdd,
-          isSelected: selectedPath == entries[index].path,
+          isSelected: controller.isWorkingTreeEntrySelected(
+            entries[index],
+            selectionScope,
+          ),
           isBatchSelected: selectedBatchPaths.contains(entries[index].path),
           showDirectory: true,
           visiblePaths: entries.map((entry) => entry.path).toList(),
@@ -468,6 +485,7 @@ class _WorkingTreeBucketSection extends StatelessWidget {
           compact: compact,
           selectedBatchPaths: selectedBatchPaths,
           visibleEntries: entries,
+          selectionScope: selectionScope,
         ),
       );
     }
@@ -707,6 +725,7 @@ class _WorkingTreeFlatList extends StatelessWidget {
   const _WorkingTreeFlatList({
     required this.entries,
     required this.selectedBatchPaths,
+    required this.selectedScope,
     required this.selectedPath,
     required this.onActivate,
     required this.compact,
@@ -714,6 +733,7 @@ class _WorkingTreeFlatList extends StatelessWidget {
 
   final List<WorkingTreeEntry> entries;
   final Set<String> selectedBatchPaths;
+  final WorkingTreeSelectionScope? selectedScope;
   final String? selectedPath;
   final _WorkingTreeEntryActivator onActivate;
   final bool compact;
@@ -728,7 +748,9 @@ class _WorkingTreeFlatList extends StatelessWidget {
         return _WorkingTreeRow(
           entry: entry,
           isOdd: index.isOdd,
-          isSelected: selectedPath == entry.path,
+          isSelected:
+              selectedPath == entry.path &&
+              selectedScope == _defaultSelectionScopeForEntry(entry),
           isBatchSelected: selectedBatchPaths.contains(entry.path),
           showDirectory: true,
           visiblePaths: visiblePaths,
@@ -736,6 +758,7 @@ class _WorkingTreeFlatList extends StatelessWidget {
           compact: compact,
           selectedBatchPaths: selectedBatchPaths,
           visibleEntries: entries,
+          selectionScope: _defaultSelectionScopeForEntry(entry),
         );
       },
     );
@@ -746,6 +769,7 @@ class _WorkingTreeGroupedList extends StatelessWidget {
   const _WorkingTreeGroupedList({
     required this.groups,
     required this.selectedBatchPaths,
+    required this.selectedScope,
     required this.selectedPath,
     required this.onActivate,
     required this.compact,
@@ -753,6 +777,7 @@ class _WorkingTreeGroupedList extends StatelessWidget {
 
   final List<_WorkingTreeDirectoryGroup> groups;
   final Set<String> selectedBatchPaths;
+  final WorkingTreeSelectionScope? selectedScope;
   final String? selectedPath;
   final _WorkingTreeEntryActivator onActivate;
   final bool compact;
@@ -766,6 +791,7 @@ class _WorkingTreeGroupedList extends StatelessWidget {
         return _DirectorySection(
           group: group,
           selectedBatchPaths: selectedBatchPaths,
+          selectedScope: selectedScope,
           selectedPath: selectedPath,
           onActivate: onActivate,
           compact: compact,
@@ -799,6 +825,7 @@ class _DirectorySection extends StatelessWidget {
   const _DirectorySection({
     required this.group,
     required this.selectedBatchPaths,
+    required this.selectedScope,
     required this.selectedPath,
     required this.onActivate,
     required this.compact,
@@ -806,6 +833,7 @@ class _DirectorySection extends StatelessWidget {
 
   final _WorkingTreeDirectoryGroup group;
   final Set<String> selectedBatchPaths;
+  final WorkingTreeSelectionScope? selectedScope;
   final String? selectedPath;
   final _WorkingTreeEntryActivator onActivate;
   final bool compact;
@@ -858,7 +886,10 @@ class _DirectorySection extends StatelessWidget {
           _WorkingTreeRow(
             entry: group.entries[index],
             isOdd: index.isOdd,
-            isSelected: selectedPath == group.entries[index].path,
+            isSelected:
+                selectedPath == group.entries[index].path &&
+                selectedScope ==
+                    _defaultSelectionScopeForEntry(group.entries[index]),
             isBatchSelected: selectedBatchPaths.contains(
               group.entries[index].path,
             ),
@@ -868,6 +899,9 @@ class _DirectorySection extends StatelessWidget {
             compact: compact,
             selectedBatchPaths: selectedBatchPaths,
             visibleEntries: group.entries,
+            selectionScope: _defaultSelectionScopeForEntry(
+              group.entries[index],
+            ),
           ),
       ],
     );
@@ -886,6 +920,7 @@ class _WorkingTreeRow extends StatelessWidget {
     required this.compact,
     required this.selectedBatchPaths,
     required this.visibleEntries,
+    required this.selectionScope,
   });
 
   final WorkingTreeEntry entry;
@@ -898,6 +933,7 @@ class _WorkingTreeRow extends StatelessWidget {
   final bool compact;
   final Set<String> selectedBatchPaths;
   final List<WorkingTreeEntry> visibleEntries;
+  final WorkingTreeSelectionScope selectionScope;
 
   @override
   Widget build(BuildContext context) {
@@ -1033,6 +1069,7 @@ class _WorkingTreeRow extends StatelessWidget {
           visiblePaths: visiblePaths,
           isControlPressed: _isControlPressed(),
           isShiftPressed: _isShiftPressed(),
+          selectionScope: selectionScope,
         ),
         child: rowChild,
       ),
@@ -1056,13 +1093,7 @@ class _FileStateGlyph extends StatelessWidget {
   Widget build(BuildContext context) {
     final tone = _workingTreeEntryTone(entry);
     final isDeleted = _hasDeletedChange(entry);
-    final label = entry.isIgnored
-        ? 'I'
-        : entry.isUntracked
-        ? 'U'
-        : entry.hasStagedChanges
-        ? 'S'
-        : _statusLabel(entry.pendingKind).toUpperCase().substring(0, 1);
+    final label = _fileStateGlyphLabel(entry);
     return Tooltip(
       message: _fileStateSummary(entry),
       child: Container(
@@ -1099,4 +1130,15 @@ class _FileStateGlyph extends StatelessWidget {
 bool _hasDeletedChange(WorkingTreeEntry entry) {
   return entry.stagedKind == GitFileStatusKind.deleted ||
       entry.pendingKind == GitFileStatusKind.deleted;
+}
+
+WorkingTreeSelectionScope _defaultSelectionScopeForEntry(
+  WorkingTreeEntry entry,
+) {
+  if (entry.hasStagedChanges &&
+      !entry.hasPendingChanges &&
+      !entry.isUntracked) {
+    return WorkingTreeSelectionScope.staged;
+  }
+  return WorkingTreeSelectionScope.unstaged;
 }

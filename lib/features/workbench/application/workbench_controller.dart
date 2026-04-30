@@ -160,7 +160,7 @@ class WorkbenchController extends ChangeNotifier {
     if (repo == null) {
       return null;
     }
-    final selectedPath = _selectedWorkingTreePathByRepoPath[repo.path];
+    final selectedPath = _selectedWorkingTreePathForRepo(repo.path);
     final entries = visibleWorkingTreeEntries;
     if (entries.isEmpty) {
       return null;
@@ -172,6 +172,26 @@ class WorkbenchController extends ChangeNotifier {
       (entry) => entry.path == selectedPath,
       orElse: () => entries.first,
     );
+  }
+
+  WorkingTreeSelectionScope? get selectedWorkingTreeScope {
+    final repo = snapshot;
+    if (repo == null) {
+      return null;
+    }
+    return _selectedWorkingTreeScopeForRepo(repo.path);
+  }
+
+  bool isWorkingTreeEntrySelected(
+    WorkingTreeEntry entry,
+    WorkingTreeSelectionScope selectionScope,
+  ) {
+    final repo = snapshot;
+    if (repo == null) {
+      return false;
+    }
+    return _selectedWorkingTreePathForRepo(repo.path) == entry.path &&
+        _selectedWorkingTreeScopeForRepo(repo.path) == selectionScope;
   }
 
   Future<void> connectToRepository(String rawPath) async {
@@ -409,7 +429,12 @@ class WorkbenchController extends ChangeNotifier {
       return;
     }
     selectedView = WorkbenchPrimaryView.changes;
-    _selectedWorkingTreePathByRepoPath[repo.path] = path;
+    _selectedWorkingTreePathByRepoPath[repo.path] = _encodeWorkingTreeSelection(
+      path,
+      workingTreeFilter == WorkingTreeViewFilter.staged
+          ? WorkingTreeSelectionScope.staged
+          : WorkingTreeSelectionScope.unstaged,
+    );
     _workingTreeSelectionAnchorPath = path;
     unawaited(_persistSelectedView());
     unawaited(_persistSelectedWorkingTreePathMap());
@@ -422,6 +447,7 @@ class WorkbenchController extends ChangeNotifier {
     required List<String> visiblePaths,
     required bool isControlPressed,
     required bool isShiftPressed,
+    required WorkingTreeSelectionScope selectionScope,
   }) async {
     final repo = snapshot;
     if (repo == null) {
@@ -429,7 +455,10 @@ class WorkbenchController extends ChangeNotifier {
     }
 
     selectedView = WorkbenchPrimaryView.changes;
-    _selectedWorkingTreePathByRepoPath[repo.path] = path;
+    _selectedWorkingTreePathByRepoPath[repo.path] = _encodeWorkingTreeSelection(
+      path,
+      selectionScope,
+    );
 
     if (isShiftPressed && visiblePaths.isNotEmpty) {
       final anchor = _workingTreeSelectionAnchorPath ?? path;
@@ -477,6 +506,33 @@ class WorkbenchController extends ChangeNotifier {
   Future<void> stageAllWorkingTreeEntries() async {
     selectedWorkingTreeBatchPaths.clear();
     await _runUserGitAction(const ['add', '--all']);
+  }
+
+  Future<bool> commitChanges(String message) async {
+    final repo = snapshot;
+    final trimmedMessage = message.trim();
+    if (repo == null || isRunningCommand || trimmedMessage.isEmpty) {
+      return false;
+    }
+    if (repo.workingTree.stagedCount == 0) {
+      errorMessage = 'Stage at least one change before committing.';
+      notifyListeners();
+      return false;
+    }
+
+    final previousSelection = snapshot == null
+        ? null
+        : _selectedWorkingTreePathByRepoPath[snapshot!.path];
+    await _runGitCommand(['commit', '-m', trimmedMessage]);
+    if (errorMessage != null) {
+      return false;
+    }
+
+    if (snapshot != null && previousSelection != null) {
+      _selectedWorkingTreePathByRepoPath[snapshot!.path] = previousSelection;
+    }
+    await refresh();
+    return true;
   }
 
   Future<void> stageSelectedWorkingTreeEntries() async {
@@ -572,7 +628,9 @@ class WorkbenchController extends ChangeNotifier {
   }
 
   Future<void> _runUserGitAction(List<String> args) async {
-    final previousSelection = selectedWorkingTreeEntry?.path;
+    final previousSelection = snapshot == null
+        ? null
+        : _selectedWorkingTreePathByRepoPath[snapshot!.path];
     await _runGitCommand(args);
     if (snapshot == null) {
       return;
@@ -726,12 +784,17 @@ class WorkbenchController extends ChangeNotifier {
       unawaited(_persistSelectedWorkingTreePathMap());
       return;
     }
-    final currentPath = _selectedWorkingTreePathByRepoPath[repo.path];
+    final currentPath = _selectedWorkingTreePathForRepo(repo.path);
+    final currentScope = _selectedWorkingTreeScopeForRepo(repo.path);
     if (currentPath != null &&
+        currentScope != null &&
         entries.any((entry) => entry.path == currentPath)) {
       return;
     }
-    _selectedWorkingTreePathByRepoPath[repo.path] = entries.first.path;
+    _selectedWorkingTreePathByRepoPath[repo.path] = _encodeWorkingTreeSelection(
+      entries.first.path,
+      _defaultSelectionScopeForEntry(entries.first),
+    );
     unawaited(_persistSelectedWorkingTreePathMap());
   }
 
@@ -762,6 +825,7 @@ class WorkbenchController extends ChangeNotifier {
       activeDiff = await _gitService.loadWorkingTreeDiff(
         repoPath: repo.path,
         entry: entry,
+        scope: selectedWorkingTreeScope,
       );
     } on GitCliException catch (error) {
       activeDiff = error.message;
@@ -859,6 +923,52 @@ class WorkbenchController extends ChangeNotifier {
       _selectedWorkingTreePathByRepoKey,
       jsonEncode(_selectedWorkingTreePathByRepoPath),
     );
+  }
+
+  String? _selectedWorkingTreePathForRepo(String repoPath) {
+    final encoded = _selectedWorkingTreePathByRepoPath[repoPath];
+    if (encoded == null || encoded.isEmpty) {
+      return null;
+    }
+    final separatorIndex = encoded.indexOf('|');
+    if (separatorIndex == -1) {
+      return encoded;
+    }
+    return encoded.substring(separatorIndex + 1);
+  }
+
+  WorkingTreeSelectionScope? _selectedWorkingTreeScopeForRepo(String repoPath) {
+    final encoded = _selectedWorkingTreePathByRepoPath[repoPath];
+    if (encoded == null || encoded.isEmpty) {
+      return null;
+    }
+    final separatorIndex = encoded.indexOf('|');
+    if (separatorIndex == -1) {
+      return null;
+    }
+    final rawScope = encoded.substring(0, separatorIndex);
+    for (final scope in WorkingTreeSelectionScope.values) {
+      if (scope.name == rawScope) {
+        return scope;
+      }
+    }
+    return null;
+  }
+
+  String _encodeWorkingTreeSelection(
+    String path,
+    WorkingTreeSelectionScope scope,
+  ) => '${scope.name}|$path';
+
+  WorkingTreeSelectionScope _defaultSelectionScopeForEntry(
+    WorkingTreeEntry entry,
+  ) {
+    if (entry.hasStagedChanges &&
+        !entry.hasPendingChanges &&
+        !entry.isUntracked) {
+      return WorkingTreeSelectionScope.staged;
+    }
+    return WorkingTreeSelectionScope.unstaged;
   }
 
   Future<void> _persistActiveRepoPath(String path) async {

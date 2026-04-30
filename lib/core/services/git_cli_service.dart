@@ -113,6 +113,7 @@ class GitCliService {
   Future<String> loadWorkingTreeDiff({
     required String repoPath,
     required WorkingTreeEntry entry,
+    WorkingTreeSelectionScope? scope,
   }) async {
     if (entry.isIgnored) {
       return 'Ignored files do not have a working diff.';
@@ -123,8 +124,10 @@ class GitCliService {
     }
 
     final sections = <String>[];
+    final includeStaged = scope != WorkingTreeSelectionScope.unstaged;
+    final includePending = scope != WorkingTreeSelectionScope.staged;
 
-    if (entry.hasStagedChanges) {
+    if (includeStaged && entry.hasStagedChanges) {
       final stagedDiff = await _runGitAllowFailure([
         'diff',
         '--cached',
@@ -137,7 +140,7 @@ class GitCliService {
       }
     }
 
-    if (entry.hasPendingChanges) {
+    if (includePending && entry.hasPendingChanges) {
       final pendingDiff = await _runGitAllowFailure([
         'diff',
         '--',

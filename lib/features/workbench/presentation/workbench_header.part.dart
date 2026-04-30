@@ -6,12 +6,14 @@ class _WorkbenchHeader extends StatelessWidget {
     required this.controller,
     required this.onOpenRepoLibrary,
     required this.onOpenBranchSwitcher,
+    required this.onOpenChangesDock,
   });
 
   final RepoSnapshot? snapshot;
   final WorkbenchController controller;
   final VoidCallback onOpenRepoLibrary;
   final VoidCallback onOpenBranchSwitcher;
+  final VoidCallback onOpenChangesDock;
 
   @override
   Widget build(BuildContext context) {
@@ -36,7 +38,10 @@ class _WorkbenchHeader extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(width: 12),
-                _GitToolbar(controller: controller),
+                _GitToolbar(
+                  controller: controller,
+                  onOpenChangesDock: onOpenChangesDock,
+                ),
               ],
             ),
           ),
@@ -91,9 +96,13 @@ class _WorkbenchHeader extends StatelessWidget {
 }
 
 class _GitToolbar extends StatelessWidget {
-  const _GitToolbar({required this.controller});
+  const _GitToolbar({
+    required this.controller,
+    required this.onOpenChangesDock,
+  });
 
   final WorkbenchController controller;
+  final VoidCallback onOpenChangesDock;
 
   @override
   Widget build(BuildContext context) {
@@ -101,11 +110,18 @@ class _GitToolbar extends StatelessWidget {
         controller.hasRepository &&
         !controller.isLoading &&
         !controller.isRunningCommand;
+    final dirtyCount = controller.snapshot?.workingTree.dirtyCount ?? 0;
 
     return Wrap(
       spacing: 8,
       runSpacing: 8,
       children: [
+        if (dirtyCount > 0)
+          _ToolbarButton(
+            label: 'Commit',
+            icon: Icons.task_alt_rounded,
+            onTap: canRun ? onOpenChangesDock : null,
+          ),
         _ToolbarButton(
           label: 'Refresh',
           icon: Icons.refresh_rounded,

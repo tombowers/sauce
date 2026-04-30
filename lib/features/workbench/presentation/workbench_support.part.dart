@@ -47,6 +47,140 @@ class _InlineToggle extends StatelessWidget {
   }
 }
 
+class _CommitComposer extends StatefulWidget {
+  const _CommitComposer({required this.controller, this.onClose});
+
+  final WorkbenchController controller;
+  final VoidCallback? onClose;
+
+  @override
+  State<_CommitComposer> createState() => _CommitComposerState();
+}
+
+class _CommitComposerState extends State<_CommitComposer> {
+  late final TextEditingController _controller;
+
+  bool get _canSubmit => _controller.text.trim().isNotEmpty;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController()..addListener(_handleChanged);
+  }
+
+  @override
+  void dispose() {
+    _controller
+      ..removeListener(_handleChanged)
+      ..dispose();
+    super.dispose();
+  }
+
+  void _handleChanged() {
+    setState(() {});
+  }
+
+  Future<void> _handleCommit() async {
+    if (!_canSubmit) {
+      return;
+    }
+    final committed = await widget.controller.commitChanges(_controller.text);
+    if (!mounted || !committed) {
+      return;
+    }
+    _controller.clear();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final snapshot = widget.controller.snapshot;
+    final stagedCount = snapshot?.workingTree.stagedCount ?? 0;
+    final canCommit =
+        stagedCount > 0 &&
+        !widget.controller.isRunningCommand &&
+        !widget.controller.isLoading;
+
+    return SurfaceCard(
+      elevation: SurfaceCardElevation.standard,
+      backgroundColor: const Color(0xFFFBFDFF),
+      padding: const EdgeInsets.all(12),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Text('Commit', style: theme.textTheme.titleSmall),
+              const SizedBox(width: 10),
+              Text(
+                stagedCount == 0
+                    ? 'Stage changes to enable commit'
+                    : '$stagedCount staged ${stagedCount == 1 ? 'file' : 'files'} ready',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: const Color(0xFF667085),
+                  fontFamily: _monoFontFamily,
+                ),
+              ),
+              const Spacer(),
+              if (widget.onClose != null)
+                _HeaderIconButton(
+                  icon: Icons.close_rounded,
+                  onTap: widget.onClose,
+                  tooltip: 'Close dock',
+                ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _controller,
+                  minLines: 2,
+                  maxLines: 4,
+                  textInputAction: TextInputAction.newline,
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    fontFamily: _monoFontFamily,
+                  ),
+                  decoration: InputDecoration(
+                    hintText: 'Write a commit message',
+                    hintStyle: theme.textTheme.bodyMedium?.copyWith(
+                      color: const Color(0xFF98A2B3),
+                    ),
+                    filled: true,
+                    fillColor: const Color(0xFFF8FAFC),
+                    contentPadding: const EdgeInsets.all(12),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: const BorderSide(color: Color(0xFFE6EBF2)),
+                    ),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: const BorderSide(color: Color(0xFFE6EBF2)),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: const BorderSide(color: Color(0xFF7AA2FF)),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 10),
+              _ToolbarButton(
+                label: 'Commit',
+                icon: Icons.task_alt_rounded,
+                onTap: canCommit && _canSubmit ? _handleCommit : null,
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _ConsoleCard extends StatelessWidget {
   const _ConsoleCard({
     required this.lines,
@@ -401,22 +535,43 @@ String _emptyChangesMessage(
 
 String _fileStateSummary(WorkingTreeEntry entry) {
   if (entry.isIgnored) {
-    return 'ignored';
+    return 'Ignored';
   }
   if (entry.isUntracked) {
-    return 'new';
+    return 'New file';
   }
-  final parts = <String>[];
+  if (entry.hasStagedChanges && entry.hasPendingChanges) {
+    if (entry.stagedKind == entry.pendingKind) {
+      return 'Staged, then edited again';
+    }
+    return 'Staged ${_longStatusLabel(entry.stagedKind)}, then changed again in working tree';
+  }
   if (entry.hasStagedChanges) {
-    parts.add('staged ${_statusLabel(entry.stagedKind)}');
+    return 'Staged ${_longStatusLabel(entry.stagedKind)}';
   }
   if (entry.hasPendingChanges) {
-    parts.add('pending ${_statusLabel(entry.pendingKind)}');
+    return 'Unstaged ${_longStatusLabel(entry.pendingKind)}';
   }
-  return parts.join('  ');
+  return 'No changes';
 }
 
-String _statusLabel(GitFileStatusKind kind) {
+String _fileStateGlyphLabel(WorkingTreeEntry entry) {
+  if (entry.isIgnored) {
+    return 'I';
+  }
+  if (entry.isUntracked) {
+    return 'U';
+  }
+  if (entry.hasStagedChanges && entry.hasPendingChanges) {
+    return 'S+';
+  }
+  if (entry.hasStagedChanges) {
+    return 'S';
+  }
+  return _shortStatusLabel(entry.pendingKind).toUpperCase().substring(0, 1);
+}
+
+String _shortStatusLabel(GitFileStatusKind kind) {
   switch (kind) {
     case GitFileStatusKind.modified:
       return 'mod';
@@ -436,6 +591,29 @@ String _statusLabel(GitFileStatusKind kind) {
       return 'ignored';
     case GitFileStatusKind.unmodified:
       return 'clean';
+  }
+}
+
+String _longStatusLabel(GitFileStatusKind kind) {
+  switch (kind) {
+    case GitFileStatusKind.modified:
+      return 'changes';
+    case GitFileStatusKind.added:
+      return 'new file';
+    case GitFileStatusKind.deleted:
+      return 'deletion';
+    case GitFileStatusKind.renamed:
+      return 'rename';
+    case GitFileStatusKind.copied:
+      return 'copy';
+    case GitFileStatusKind.unmerged:
+      return 'merge conflict';
+    case GitFileStatusKind.untracked:
+      return 'new file';
+    case GitFileStatusKind.ignored:
+      return 'ignored file';
+    case GitFileStatusKind.unmodified:
+      return 'clean file';
   }
 }
 
