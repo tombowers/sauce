@@ -522,7 +522,7 @@ class _WorkbenchScreenState extends State<WorkbenchScreen>
             _controller.errorMessage ??
             'The commit succeeded locally, but the push did not complete.',
       );
-      return false;
+      return true;
     }
     return true;
   }
