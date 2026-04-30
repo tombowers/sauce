@@ -71,6 +71,7 @@ class _CompactWorkbench extends StatelessWidget {
     required this.onOpenRepoLibrary,
     required this.onOpenBranchSwitcher,
     required this.onOpenChangesDock,
+    required this.onConfirmPush,
   });
   final RepoSnapshot? snapshot;
   final CommitEntry? selectedCommit;
@@ -78,6 +79,7 @@ class _CompactWorkbench extends StatelessWidget {
   final VoidCallback onOpenRepoLibrary;
   final VoidCallback onOpenBranchSwitcher;
   final VoidCallback onOpenChangesDock;
+  final Future<void> Function() onConfirmPush;
   @override
   Widget build(BuildContext context) {
     return ListView(
@@ -88,6 +90,7 @@ class _CompactWorkbench extends StatelessWidget {
           onOpenRepoLibrary: onOpenRepoLibrary,
           onOpenBranchSwitcher: onOpenBranchSwitcher,
           onOpenChangesDock: onOpenChangesDock,
+          onConfirmPush: onConfirmPush,
         ),
         if (controller.errorMessage != null) ...[
           const SizedBox(height: 14),

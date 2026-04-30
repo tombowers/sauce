@@ -11,6 +11,51 @@ import '../../../core/models/working_tree_entry.dart';
 import '../../../core/services/git_cli_service.dart';
 import '../../../core/services/local_state_store.dart';
 
+class PushPreparation {
+  const PushPreparation({
+    required this.localBranch,
+    required this.remoteName,
+    required this.remoteBranch,
+    required this.willSetUpstream,
+    required this.aheadBy,
+    required this.behindBy,
+    this.blockedReason,
+  });
+
+  final String? localBranch;
+  final String? remoteName;
+  final String? remoteBranch;
+  final bool willSetUpstream;
+  final int aheadBy;
+  final int behindBy;
+  final String? blockedReason;
+
+  bool get canPush =>
+      blockedReason == null &&
+      localBranch != null &&
+      remoteName != null &&
+      remoteBranch != null;
+
+  String get targetLabel {
+    if (remoteName == null || remoteBranch == null) {
+      return '';
+    }
+    return '$remoteName/$remoteBranch';
+  }
+
+  List<String> gitArgs() {
+    if (!canPush) {
+      return const [];
+    }
+    final refSpec = localBranch == remoteBranch
+        ? localBranch!
+        : '${localBranch!}:$remoteBranch';
+    return willSetUpstream
+        ? ['push', '-u', remoteName!, refSpec]
+        : ['push', remoteName!, refSpec];
+  }
+}
+
 class WorkbenchController extends ChangeNotifier {
   WorkbenchController({GitCliService? gitService})
     : _gitService = gitService ?? GitCliService() {
@@ -27,11 +72,14 @@ class WorkbenchController extends ChangeNotifier {
   static const _workingTreeLayoutKey = 'workbench.working_tree.layout';
   static const _selectedWorkingTreePathByRepoKey =
       'selected_working_tree_path_by_repo';
+  static const _commitMessageDraftByRepoKey =
+      'workbench.commit_message_draft_by_repo';
   final GitCliService _gitService;
   LocalStateStore? _localStore;
   final Map<String, String> _selectedCommitByRepoPath = <String, String>{};
   final Map<String, String> _selectedWorkingTreePathByRepoPath =
       <String, String>{};
+  final Map<String, String> _commitMessageDraftByRepoPath = <String, String>{};
   final Set<String> selectedWorkingTreeBatchPaths = <String>{};
   String? _workingTreeSelectionAnchorPath;
 
@@ -93,6 +141,9 @@ class WorkbenchController extends ChangeNotifier {
     _selectedWorkingTreePathByRepoPath
       ..clear()
       ..addAll(_loadStringMap(store, _selectedWorkingTreePathByRepoKey));
+    _commitMessageDraftByRepoPath
+      ..clear()
+      ..addAll(_loadStringMap(store, _commitMessageDraftByRepoKey));
 
     notifyListeners();
 
@@ -132,6 +183,108 @@ class WorkbenchController extends ChangeNotifier {
   List<BranchEntry> get remoteBranches =>
       snapshot?.branches.where((branch) => branch.isRemote).toList() ??
       const [];
+
+  BranchEntry? get currentLocalBranch {
+    for (final branch in localBranches) {
+      if (branch.isCurrent) {
+        return branch;
+      }
+    }
+    return null;
+  }
+
+  PushPreparation? get pushPreparation {
+    final repo = snapshot;
+    if (repo == null) {
+      return null;
+    }
+    final branch = currentLocalBranch;
+    if (branch == null) {
+      return PushPreparation(
+        localBranch: null,
+        remoteName: null,
+        remoteBranch: null,
+        willSetUpstream: false,
+        aheadBy: repo.aheadBy,
+        behindBy: repo.behindBy,
+        blockedReason:
+            'You are not on a local branch, so there is no safe push target.',
+      );
+    }
+
+    final upstream = branch.upstream;
+    if (upstream != null && upstream.isNotEmpty) {
+      final slashIndex = upstream.indexOf('/');
+      final remoteName = slashIndex == -1
+          ? upstream
+          : upstream.substring(0, slashIndex);
+      final remoteBranch = slashIndex == -1
+          ? branch.name
+          : upstream.substring(slashIndex + 1);
+      return PushPreparation(
+        localBranch: branch.name,
+        remoteName: remoteName,
+        remoteBranch: remoteBranch,
+        willSetUpstream: false,
+        aheadBy: repo.aheadBy,
+        behindBy: repo.behindBy,
+      );
+    }
+
+    final inferredRemote = _preferredPushRemoteName(branch);
+    if (inferredRemote == null) {
+      return PushPreparation(
+        localBranch: branch.name,
+        remoteName: null,
+        remoteBranch: null,
+        willSetUpstream: false,
+        aheadBy: repo.aheadBy,
+        behindBy: repo.behindBy,
+        blockedReason:
+            'No upstream is configured for ${branch.name}, and no default remote could be inferred.',
+      );
+    }
+
+    return PushPreparation(
+      localBranch: branch.name,
+      remoteName: inferredRemote,
+      remoteBranch: branch.name,
+      willSetUpstream: true,
+      aheadBy: repo.aheadBy,
+      behindBy: repo.behindBy,
+    );
+  }
+
+  String get commitMessageDraft {
+    final repo = snapshot;
+    if (repo == null) {
+      return '';
+    }
+    return _commitMessageDraftByRepoPath[repo.path] ?? '';
+  }
+
+  void updateCommitMessageDraft(String value) {
+    final repo = snapshot;
+    if (repo == null) {
+      return;
+    }
+    if (value.isEmpty) {
+      _commitMessageDraftByRepoPath.remove(repo.path);
+    } else {
+      _commitMessageDraftByRepoPath[repo.path] = value;
+    }
+    unawaited(_persistCommitMessageDrafts());
+  }
+
+  void clearCommitMessageDraft() {
+    final repo = snapshot;
+    if (repo == null) {
+      return;
+    }
+    if (_commitMessageDraftByRepoPath.remove(repo.path) != null) {
+      unawaited(_persistCommitMessageDrafts());
+    }
+  }
 
   List<WorkingTreeEntry> get filteredWorkingTreeEntries {
     final workingTree = snapshot?.workingTree;
@@ -528,6 +681,32 @@ class WorkbenchController extends ChangeNotifier {
       return false;
     }
 
+    clearCommitMessageDraft();
+    if (snapshot != null && previousSelection != null) {
+      _selectedWorkingTreePathByRepoPath[snapshot!.path] = previousSelection;
+    }
+    await refresh();
+    return true;
+  }
+
+  Future<bool> pushCurrentBranch() async {
+    final preparation = pushPreparation;
+    if (preparation == null || !preparation.canPush) {
+      errorMessage =
+          preparation?.blockedReason ??
+          'Unable to determine a safe push target.';
+      notifyListeners();
+      return false;
+    }
+
+    final previousSelection = snapshot == null
+        ? null
+        : _selectedWorkingTreePathByRepoPath[snapshot!.path];
+    await _runGitCommand(preparation.gitArgs());
+    if (errorMessage != null) {
+      return false;
+    }
+
     if (snapshot != null && previousSelection != null) {
       _selectedWorkingTreePathByRepoPath[snapshot!.path] = previousSelection;
     }
@@ -786,10 +965,22 @@ class WorkbenchController extends ChangeNotifier {
     }
     final currentPath = _selectedWorkingTreePathForRepo(repo.path);
     final currentScope = _selectedWorkingTreeScopeForRepo(repo.path);
-    if (currentPath != null &&
-        currentScope != null &&
-        entries.any((entry) => entry.path == currentPath)) {
-      return;
+    if (currentPath != null && currentScope != null) {
+      for (final entry in entries) {
+        if (entry.path != currentPath) {
+          continue;
+        }
+        if (_isSelectionScopeValidForEntry(entry, currentScope)) {
+          return;
+        }
+        _selectedWorkingTreePathByRepoPath[repo.path] =
+            _encodeWorkingTreeSelection(
+              entry.path,
+              _defaultSelectionScopeForEntry(entry),
+            );
+        unawaited(_persistSelectedWorkingTreePathMap());
+        return;
+      }
     }
     _selectedWorkingTreePathByRepoPath[repo.path] = _encodeWorkingTreeSelection(
       entries.first.path,
@@ -925,6 +1116,14 @@ class WorkbenchController extends ChangeNotifier {
     );
   }
 
+  Future<void> _persistCommitMessageDrafts() async {
+    final store = await _store();
+    await store.writeString(
+      _commitMessageDraftByRepoKey,
+      jsonEncode(_commitMessageDraftByRepoPath),
+    );
+  }
+
   String? _selectedWorkingTreePathForRepo(String repoPath) {
     final encoded = _selectedWorkingTreePathByRepoPath[repoPath];
     if (encoded == null || encoded.isEmpty) {
@@ -969,6 +1168,43 @@ class WorkbenchController extends ChangeNotifier {
       return WorkingTreeSelectionScope.staged;
     }
     return WorkingTreeSelectionScope.unstaged;
+  }
+
+  bool _isSelectionScopeValidForEntry(
+    WorkingTreeEntry entry,
+    WorkingTreeSelectionScope scope,
+  ) {
+    switch (scope) {
+      case WorkingTreeSelectionScope.unstaged:
+        return entry.hasPendingChanges || entry.isUntracked;
+      case WorkingTreeSelectionScope.staged:
+        return entry.hasStagedChanges;
+    }
+  }
+
+  String? _preferredPushRemoteName(BranchEntry branch) {
+    final matchingRemoteNames = remoteBranches
+        .where((candidate) => candidate.shortName == branch.name)
+        .map((candidate) => candidate.remoteName)
+        .toSet();
+    if (matchingRemoteNames.contains('origin')) {
+      return 'origin';
+    }
+    if (matchingRemoteNames.length == 1) {
+      return matchingRemoteNames.first;
+    }
+
+    final allRemoteNames = remoteBranches
+        .map((candidate) => candidate.remoteName)
+        .where((name) => name.isNotEmpty)
+        .toSet();
+    if (allRemoteNames.contains('origin')) {
+      return 'origin';
+    }
+    if (allRemoteNames.length == 1) {
+      return allRemoteNames.first;
+    }
+    return null;
   }
 
   Future<void> _persistActiveRepoPath(String path) async {

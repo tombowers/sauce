@@ -7,6 +7,7 @@ class _WorkbenchHeader extends StatelessWidget {
     required this.onOpenRepoLibrary,
     required this.onOpenBranchSwitcher,
     required this.onOpenChangesDock,
+    required this.onConfirmPush,
   });
 
   final RepoSnapshot? snapshot;
@@ -14,6 +15,7 @@ class _WorkbenchHeader extends StatelessWidget {
   final VoidCallback onOpenRepoLibrary;
   final VoidCallback onOpenBranchSwitcher;
   final VoidCallback onOpenChangesDock;
+  final Future<void> Function() onConfirmPush;
 
   @override
   Widget build(BuildContext context) {
@@ -41,6 +43,7 @@ class _WorkbenchHeader extends StatelessWidget {
                 _GitToolbar(
                   controller: controller,
                   onOpenChangesDock: onOpenChangesDock,
+                  onConfirmPush: onConfirmPush,
                 ),
               ],
             ),
@@ -99,10 +102,12 @@ class _GitToolbar extends StatelessWidget {
   const _GitToolbar({
     required this.controller,
     required this.onOpenChangesDock,
+    required this.onConfirmPush,
   });
 
   final WorkbenchController controller;
   final VoidCallback onOpenChangesDock;
+  final Future<void> Function() onConfirmPush;
 
   @override
   Widget build(BuildContext context) {
@@ -148,9 +153,7 @@ class _GitToolbar extends StatelessWidget {
         _ToolbarButton(
           label: 'Push',
           icon: Icons.north_east_rounded,
-          onTap: canRun
-              ? () => controller.runQuickCommand(const ['push'])
-              : null,
+          onTap: canRun ? () => unawaited(onConfirmPush()) : null,
         ),
       ],
     );

@@ -48,9 +48,18 @@ class _InlineToggle extends StatelessWidget {
 }
 
 class _CommitComposer extends StatefulWidget {
-  const _CommitComposer({required this.controller, this.onClose});
+  const _CommitComposer({
+    required this.controller,
+    required this.onCommitRequested,
+    this.onClose,
+  });
 
   final WorkbenchController controller;
+  final Future<bool> Function({
+    required String message,
+    required bool pushAfterCommit,
+  })
+  onCommitRequested;
   final VoidCallback? onClose;
 
   @override
@@ -65,7 +74,9 @@ class _CommitComposerState extends State<_CommitComposer> {
   @override
   void initState() {
     super.initState();
-    _controller = TextEditingController()..addListener(_handleChanged);
+    _controller = TextEditingController(
+      text: widget.controller.commitMessageDraft,
+    )..addListener(_handleChanged);
   }
 
   @override
@@ -77,6 +88,7 @@ class _CommitComposerState extends State<_CommitComposer> {
   }
 
   void _handleChanged() {
+    widget.controller.updateCommitMessageDraft(_controller.text);
     setState(() {});
   }
 
@@ -84,7 +96,24 @@ class _CommitComposerState extends State<_CommitComposer> {
     if (!_canSubmit) {
       return;
     }
-    final committed = await widget.controller.commitChanges(_controller.text);
+    final committed = await widget.onCommitRequested(
+      message: _controller.text.trim(),
+      pushAfterCommit: false,
+    );
+    if (!mounted || !committed) {
+      return;
+    }
+    _controller.clear();
+  }
+
+  Future<void> _handleCommitAndPush() async {
+    if (!_canSubmit) {
+      return;
+    }
+    final committed = await widget.onCommitRequested(
+      message: _controller.text.trim(),
+      pushAfterCommit: true,
+    );
     if (!mounted || !committed) {
       return;
     }
@@ -100,6 +129,9 @@ class _CommitComposerState extends State<_CommitComposer> {
         stagedCount > 0 &&
         !widget.controller.isRunningCommand &&
         !widget.controller.isLoading;
+    final pushPreparation = widget.controller.pushPreparation;
+    final canPushAfterCommit = canCommit && (pushPreparation?.canPush ?? false);
+    final unpushedAfterCommit = (pushPreparation?.aheadBy ?? 0) + 1;
 
     return SurfaceCard(
       elevation: SurfaceCardElevation.standard,
@@ -132,6 +164,15 @@ class _CommitComposerState extends State<_CommitComposer> {
             ],
           ),
           const SizedBox(height: 10),
+          if (canPushAfterCommit) ...[
+            Text(
+              'Commit & Push will push all unpushed commits on this branch, including this new one ($unpushedAfterCommit total).',
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: const Color(0xFF667085),
+              ),
+            ),
+            const SizedBox(height: 10),
+          ],
           Row(
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
@@ -169,6 +210,14 @@ class _CommitComposerState extends State<_CommitComposer> {
               ),
               const SizedBox(width: 10),
               _ToolbarButton(
+                label: 'Commit & Push',
+                icon: Icons.publish_rounded,
+                onTap: canPushAfterCommit && _canSubmit
+                    ? _handleCommitAndPush
+                    : null,
+              ),
+              const SizedBox(width: 8),
+              _ToolbarButton(
                 label: 'Commit',
                 icon: Icons.task_alt_rounded,
                 onTap: canCommit && _canSubmit ? _handleCommit : null,
@@ -177,6 +226,80 @@ class _CommitComposerState extends State<_CommitComposer> {
           ),
         ],
       ),
+    );
+  }
+}
+
+class _PushConfirmationDialog extends StatelessWidget {
+  const _PushConfirmationDialog({
+    required this.preparation,
+    this.additionalCommits = 0,
+  });
+
+  final PushPreparation preparation;
+  final int additionalCommits;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final canPush = preparation.canPush;
+    final title = canPush ? 'Push branch' : 'Cannot push yet';
+    final totalCommits = preparation.aheadBy + additionalCommits;
+    final body = canPush
+        ? totalCommits > 0
+              ? 'Push $totalCommits unpushed commit${totalCommits == 1 ? '' : 's'} from ${preparation.localBranch} to ${preparation.targetLabel}?'
+              : 'Push ${preparation.localBranch} to ${preparation.targetLabel}?'
+        : (preparation.blockedReason ??
+              'Unable to determine a safe push target.');
+
+    return AlertDialog(
+      title: Text(title),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(body),
+          if (canPush) ...[
+            const SizedBox(height: 12),
+            if (preparation.willSetUpstream)
+              Text(
+                'This will also set ${preparation.targetLabel} as the upstream for ${preparation.localBranch}.',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: const Color(0xFF667085),
+                ),
+              ),
+            if (preparation.behindBy > 0) ...[
+              const SizedBox(height: 12),
+              Text(
+                'Remote is ahead by ${preparation.behindBy} commit${preparation.behindBy == 1 ? '' : 's'}. Push may be rejected until you pull.',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: const Color(0xFFB54708),
+                ),
+              ),
+            ],
+            if (totalCommits == 0 && !preparation.willSetUpstream) ...[
+              const SizedBox(height: 12),
+              Text(
+                'No local commits appear ahead of upstream. This push may be a no-op.',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: const Color(0xFF667085),
+                ),
+              ),
+            ],
+          ],
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(false),
+          child: Text(canPush ? 'Cancel' : 'Close'),
+        ),
+        if (canPush)
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Push'),
+          ),
+      ],
     );
   }
 }

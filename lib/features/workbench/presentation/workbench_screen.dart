@@ -181,6 +181,7 @@ class _WorkbenchScreenState extends State<WorkbenchScreen>
                           onOpenRepoLibrary: _openRepoLibrary,
                           onOpenBranchSwitcher: _openBranchSwitcher,
                           onOpenChangesDock: _openChangesDock,
+                          onConfirmPush: _handlePushRequested,
                         )
                       : Column(
                           children: [
@@ -190,6 +191,7 @@ class _WorkbenchScreenState extends State<WorkbenchScreen>
                               onOpenRepoLibrary: _openRepoLibrary,
                               onOpenBranchSwitcher: _openBranchSwitcher,
                               onOpenChangesDock: _openChangesDock,
+                              onConfirmPush: _handlePushRequested,
                             ),
                             if (_controller.errorMessage != null) ...[
                               const SizedBox(height: 14),
@@ -347,6 +349,22 @@ class _WorkbenchScreenState extends State<WorkbenchScreen>
                       _CommitComposer(
                         controller: _controller,
                         onClose: () => Navigator.of(context).pop(),
+                        onCommitRequested:
+                            ({
+                              required String message,
+                              required bool pushAfterCommit,
+                            }) async {
+                              final navigator = Navigator.of(context);
+                              final committed = await _handleCommitRequested(
+                                dialogContext: context,
+                                message: message,
+                                pushAfterCommit: pushAfterCommit,
+                              );
+                              if (committed && navigator.mounted) {
+                                navigator.pop();
+                              }
+                              return committed;
+                            },
                       ),
                       const SizedBox(height: 12),
                       const Divider(height: 1, color: Color(0xFFE7ECF2)),
@@ -458,6 +476,116 @@ class _WorkbenchScreenState extends State<WorkbenchScreen>
       text: _controller.repoPath,
       selection: TextSelection.collapsed(offset: _controller.repoPath.length),
       composing: TextRange.empty,
+    );
+  }
+
+  Future<bool> _handleCommitRequested({
+    required BuildContext dialogContext,
+    required String message,
+    required bool pushAfterCommit,
+  }) async {
+    if (pushAfterCommit) {
+      final confirmed = await _showPushConfirmationDialog(
+        dialogContext,
+        additionalCommits: 1,
+      );
+      if (!mounted || !confirmed) {
+        return false;
+      }
+    }
+
+    final committed = await _controller.commitChanges(message);
+    if (!mounted) {
+      return false;
+    }
+    if (!committed) {
+      await _showActionFailureDialog(
+        context,
+        title: 'Commit failed',
+        message: _controller.errorMessage ?? 'Unable to create the commit.',
+      );
+      return false;
+    }
+    if (!pushAfterCommit) {
+      return true;
+    }
+
+    final pushed = await _controller.pushCurrentBranch();
+    if (!mounted) {
+      return false;
+    }
+    if (!pushed) {
+      await _showActionFailureDialog(
+        context,
+        title: 'Commit created, but push failed',
+        message:
+            _controller.errorMessage ??
+            'The commit succeeded locally, but the push did not complete.',
+      );
+      return false;
+    }
+    return true;
+  }
+
+  Future<void> _handlePushRequested() async {
+    final confirmed = await _showPushConfirmationDialog(context);
+    if (!mounted) {
+      return;
+    }
+    if (!confirmed) {
+      return;
+    }
+    final pushed = await _controller.pushCurrentBranch();
+    if (!mounted) {
+      return;
+    }
+    if (pushed) {
+      return;
+    }
+    await _showActionFailureDialog(
+      context,
+      title: 'Push failed',
+      message: _controller.errorMessage ?? 'Unable to push the current branch.',
+    );
+  }
+
+  Future<bool> _showPushConfirmationDialog(
+    BuildContext dialogContext, {
+    int additionalCommits = 0,
+  }) async {
+    final preparation = _controller.pushPreparation;
+    if (preparation == null) {
+      return false;
+    }
+    final confirmed = await showDialog<bool>(
+      context: dialogContext,
+      barrierDismissible: true,
+      builder: (context) => _PushConfirmationDialog(
+        preparation: preparation,
+        additionalCommits: additionalCommits,
+      ),
+    );
+    return confirmed ?? false;
+  }
+
+  Future<void> _showActionFailureDialog(
+    BuildContext dialogContext, {
+    required String title,
+    required String message,
+  }) async {
+    await showDialog<void>(
+      context: dialogContext,
+      barrierDismissible: true,
+      builder: (context) => AlertDialog(
+        title: Text(title),
+        content: Text(message),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
     );
   }
 }
